@@ -1,7 +1,7 @@
 [package]
 name = "txtx-addon-kit"
 description = "Low level primitives for building addons for Txtx"
-version = "0.4.13"
+version = "0.4.14"
 edition = { workspace = true }
 license = { workspace = true }
 repository = { workspace = true }
