@@ -1325,7 +1325,7 @@ impl TryFrom<String> for Type {
                 } else if other.starts_with("array[") && other.ends_with("]") {
                     let mut inner = other.replace("array[", "");
                     inner = inner.replace("]", "");
-                    return Type::try_from(inner);
+                    return Ok(Type::array(Type::try_from(inner)?));
                 } else if other.starts_with("addon(") {
                     let mut inner = other.replace("addon(", "");
                     inner = inner.replace(")", "");
