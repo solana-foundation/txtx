@@ -35,15 +35,18 @@ hmac = "0.12.0"
 pbkdf2 = { version = "0.12.2", features = ["simple"], default-features = false }
 libsecp256k1 = { version = "0.7.0" }
 keccak-hash = "0.11.0"
-dirs = "5.0.1"
+dirs = { version = "5.0.1", optional = true }
 dyn-clone = "1"
 
 [dev-dependencies]
 test-case = "3.3"
 hiro-system-kit = "0.3.4"
 
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { version = "0.2", features = ["js"] }
+
 [features]
-default=[]
+default = ["dirs"]
 wasm = []
 
 [lib]

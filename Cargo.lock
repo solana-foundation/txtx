@@ -10393,6 +10393,7 @@ dependencies = [
  "dyn-clone",
  "ed25519-dalek-bip32",
  "futures",
+ "getrandom 0.2.15",
  "hcl-edit",
  "hex",
  "highway",

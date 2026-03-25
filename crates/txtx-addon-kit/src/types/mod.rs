@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+#[cfg(feature = "dirs")]
 use std::env;
 use std::fmt::Display;
 use std::path::PathBuf;
@@ -323,8 +324,18 @@ impl AuthorizationContext {
         let path_str = input.to_string_lossy();
 
         let loc = if let Some(stripped) = path_str.strip_prefix("~/") {
-            let home = PathBuf::from(get_home_dir());
-            FileLocation::from_path(home.join(stripped))
+            #[cfg(feature = "dirs")]
+            {
+                let home = PathBuf::from(get_home_dir());
+                FileLocation::from_path(home.join(stripped))
+            }
+            #[cfg(not(feature = "dirs"))]
+            {
+                let _ = stripped;
+                return Err(
+                    "Home directory expansion (~/) is not supported in this build".to_string(),
+                );
+            }
         }
         // If absolute, use as-is
         else if input.is_absolute() {
@@ -349,6 +360,7 @@ impl AuthorizationContext {
 /// We set out snap build to set this environment variable to the real home directory,
 /// because by default, snaps run in a confined environment where the home directory is not
 /// the user's actual home directory.
+#[cfg(feature = "dirs")]
 fn get_home_dir() -> String {
     if let Ok(real_home) = env::var("SNAP_REAL_HOME") {
         let path_buf = PathBuf::from(real_home);

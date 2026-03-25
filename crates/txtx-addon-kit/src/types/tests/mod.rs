@@ -61,7 +61,16 @@ fn it_rejects_invalid_keys() {
     }
 }
 
+#[cfg(feature = "dirs")]
 #[test_case("~/home/path", dirs::home_dir().unwrap().join("home/path").to_str().unwrap())]
+fn test_auth_context_get_path_from_str_home(path_str: &str, expected: &str) {
+    let auth_context = AuthorizationContext::new(FileLocation::from_path(
+        Path::new("/workspace/txtx.yml").to_path_buf(),
+    ));
+    let result = auth_context.get_file_location_from_path_buf(&PathBuf::from(path_str)).unwrap();
+    assert_eq!(result.to_string(), expected);
+}
+
 #[test_case("/absolute/path", "/absolute/path")]
 #[test_case("./relative/path", "/workspace/./relative/path"; "current directory")]
 #[test_case("../relative/path", "/workspace/../relative/path"; "parent directory")]
