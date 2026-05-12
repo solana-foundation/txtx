@@ -259,6 +259,12 @@ pub fn setup_test(
 ) -> TestHarness {
     let future = build_runbook_from_fixture(file_name, fixture, get_addon_by_namespace);
     let mut runbook = block_on(future).expect("unable to build runbook from fixture");
+    // Mirror what `handle_run_command` does for a fresh (non-stateful) run: ensure every
+    // flow context is in `Full` execution mode. The supervised runloop now honors
+    // `FlowContext::is_enabled()` and would otherwise treat the default `Ignored` mode
+    // as "already completed" and exit immediately. See `start_supervised_runbook_runloop`
+    // in `crates/txtx-core/src/lib.rs`.
+    runbook.enable_full_execution_mode();
 
     let (block_tx, block_rx) = txtx_addon_kit::channel::unbounded::<BlockEvent>();
     let (action_item_updates_tx, _action_item_updates_rx) =

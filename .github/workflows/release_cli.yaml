@@ -50,6 +50,8 @@ jobs:
   dist_txtx:
     name: Build Txtx Distributions
     runs-on: ${{ matrix.os }}
+    env:
+      DEFAULT_SUPERVISOR_UI_VERSION: v0.1.2
     outputs:
       LINUX_X64_SHA: ${{ steps.linux_x64_sha.outputs.LINUX_X64_SHA }}
       MACOS_X64_SHA: ${{ steps.macos_x64_sha.outputs.MACOS_X64_SHA }}
@@ -135,7 +137,8 @@ jobs:
         
       - name: Build - Cargo
         env:
-          TXTX_SUPERVISOR_UI_VERSION: ${{ inputs.supervisor_ui_version }}
+          # Use the provided supervisor UI version or fall back to the default
+          TXTX_SUPERVISOR_UI_VERSION: ${{ github.event.inputs.supervisor_ui_version != '' && github.event.inputs.supervisor_ui_version || env.DEFAULT_SUPERVISOR_UI_VERSION }}
         run: 
           cargo build --manifest-path ./txtx/Cargo.toml --release --locked --target ${{ matrix.target }} --features supervisor_ui
 
