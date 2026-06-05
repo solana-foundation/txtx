@@ -3,6 +3,7 @@ pub const SIGNERS: &str = "signers";
 pub const SIGNER: &str = "signer";
 pub const PAYER: &str = "payer";
 pub const AUTHORITY: &str = "authority";
+pub const FREEZE_AUTHORITY: &str = "freeze_authority";
 
 pub const DEFAULT_DERIVATION_PATH: &str = "m/44'/501'/0'/0'";
 pub const DEFAULT_ANCHOR_TARGET_PATH: &str = "target";
@@ -49,6 +50,8 @@ pub const IS_DEPLOYMENT: &str = "is_deployment";
 pub const AMOUNT: &str = "amount";
 pub const RECIPIENT: &str = "recipient";
 pub const TOKEN: &str = "token";
+pub const DECIMALS: &str = "decimals";
+pub const INITIAL_SUPPLY: &str = "initial_supply";
 pub const FUND_RECIPIENT: &str = "fund_recipient";
 pub const AUTHORITY_ADDRESS: &str = "authority_address";
 pub const RECIPIENT_ADDRESS: &str = "recipient_address";
