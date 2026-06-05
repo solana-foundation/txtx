@@ -313,14 +313,34 @@ impl CommandImplementation for DeployToken {
         mut signers: SignersState,
         auth_context: &txtx_addon_kit::types::AuthorizationContext,
     ) -> SignerActionsFutureResult {
-        let signers_did = get_signers_did(args).unwrap();
+        let signers_did = get_signers_did(args)
+            .map_err(|e| (signers.clone(), ValueStore::tmp(), diagnosed_error!("{e}")))?;
+        let first_signer_did = signers_did.first().cloned().ok_or_else(|| {
+            (signers.clone(), ValueStore::tmp(), diagnosed_error!("signers list is empty"))
+        })?;
+
         let signers_states = signers_did
             .iter()
-            .map(|did| signers.get_signer_state(did).unwrap().clone())
-            .collect::<Vec<_>>();
-        let payer_signer_did = super::get_custom_signer_did(args, PAYER)
-            .unwrap_or_else(|_| signers_did.first().unwrap().clone());
-        let mut payer_signer_state = signers.pop_signer_state(&payer_signer_did).unwrap();
+            .map(|did| {
+                signers.get_signer_state(did).cloned().ok_or_else(|| {
+                    (
+                        signers.clone(),
+                        ValueStore::tmp(),
+                        diagnosed_error!("signer state not found for signer {}", did),
+                    )
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let payer_signer_did =
+            super::get_custom_signer_did(args, PAYER).unwrap_or_else(|_| first_signer_did.clone());
+        let mut payer_signer_state =
+            signers.pop_signer_state(&payer_signer_did).ok_or_else(|| {
+                (
+                    signers.clone(),
+                    ValueStore::tmp(),
+                    diagnosed_error!("signer state not found for payer {}", payer_signer_did),
+                )
+            })?;
 
         let decimals = args
             .get_expected_uint(DECIMALS)
@@ -378,7 +398,13 @@ impl CommandImplementation for DeployToken {
                 )
             })?
         } else {
-            signer_pubkeys[0]
+            *signer_pubkeys.first().ok_or_else(|| {
+                (
+                    signers.clone(),
+                    payer_signer_state.clone(),
+                    diagnosed_error!("signers list is empty"),
+                )
+            })?
         };
 
         let freeze_authority_pubkey = args
