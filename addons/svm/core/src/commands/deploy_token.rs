@@ -28,7 +28,7 @@ use txtx_addon_network_svm_types::SVM_PUBKEY;
 use crate::codec::send_transaction::send_transaction_background_task;
 use crate::constants::{
     AUTHORITY, AUTHORITY_ADDRESS, CHECKED_PUBLIC_KEY, DECIMALS, FREEZE_AUTHORITY, INITIAL_SUPPLY,
-    PAYER, RPC_API_URL, SIGNERS, TOKEN_MINT_ADDRESS, TRANSACTION_BYTES,
+    PAYER, RPC_API_URL, SIGNERS, TOKEN_MINT_ADDRESS, TOKEN_PROGRAM_ID, TRANSACTION_BYTES,
 };
 use crate::typing::SvmValue;
 
@@ -36,6 +36,87 @@ use super::get_signers_did;
 use super::sign_transaction::{check_signed_executability, run_signed_execution};
 
 const TOKEN_MINT_ACCOUNT_SPACE: u64 = 82;
+
+fn create_initialize_mint_instruction(
+    token_program_id: &Pubkey,
+    mint_pubkey: &Pubkey,
+    authority_pubkey: &Pubkey,
+    freeze_authority_pubkey: Option<&Pubkey>,
+    decimals: u8,
+) -> Result<Instruction, Diagnostic> {
+    if token_program_id == &spl_token_interface::id() {
+        return spl_token_interface::instruction::initialize_mint(
+            token_program_id,
+            mint_pubkey,
+            authority_pubkey,
+            freeze_authority_pubkey,
+            decimals,
+        )
+        .map_err(|e| {
+            diagnosed_error!("failed to create token mint initialization instruction: {}", e)
+        });
+    }
+
+    if token_program_id == &spl_token_2022_interface::id() {
+        return spl_token_2022_interface::instruction::initialize_mint(
+            token_program_id,
+            mint_pubkey,
+            authority_pubkey,
+            freeze_authority_pubkey,
+            decimals,
+        )
+        .map_err(|e| {
+            diagnosed_error!("failed to create token mint initialization instruction: {}", e)
+        });
+    }
+
+    Err(diagnosed_error!(
+        "unsupported token program id: {}; expected SPL Token ({}) or Token-2022 ({})",
+        token_program_id,
+        spl_token_interface::id(),
+        spl_token_2022_interface::id()
+    ))
+}
+
+fn create_mint_to_instruction(
+    token_program_id: &Pubkey,
+    mint_pubkey: &Pubkey,
+    authority_token_account: &Pubkey,
+    authority_pubkey: &Pubkey,
+    signer_pubkeys: &[&Pubkey],
+    initial_supply: u64,
+) -> Result<Instruction, Diagnostic> {
+    if token_program_id == &spl_token_interface::id() {
+        return spl_token_interface::instruction::mint_to(
+            token_program_id,
+            mint_pubkey,
+            authority_token_account,
+            authority_pubkey,
+            signer_pubkeys,
+            initial_supply,
+        )
+        .map_err(|e| diagnosed_error!("failed to create token mint-to instruction: {}", e));
+    }
+
+    if token_program_id == &spl_token_2022_interface::id() {
+        return spl_token_2022_interface::instruction::mint_to(
+            token_program_id,
+            mint_pubkey,
+            authority_token_account,
+            authority_pubkey,
+            signer_pubkeys,
+            initial_supply,
+        )
+        .map_err(|e| diagnosed_error!("failed to create token mint-to instruction: {}", e));
+    }
+
+    Err(diagnosed_error!(
+        "unsupported token program id: {}; expected SPL Token ({}) or Token-2022 ({})",
+        token_program_id,
+        spl_token_interface::id(),
+        spl_token_2022_interface::id()
+    ))
+}
 
 fn build_deploy_token_instructions(
     payer_pubkey: &Pubkey,
@@ -46,6 +127,7 @@ fn build_deploy_token_instructions(
     initial_supply: u64,
     mint_lamports: u64,
     signer_pubkeys: &[Pubkey],
+    token_program_id: &Pubkey,
 ) -> Result<Vec<Instruction>, Diagnostic> {
     let mut instructions = vec![
         solana_system_interface::instruction::create_account(
@@ -53,47 +135,42 @@ fn build_deploy_token_instructions(
             mint_pubkey,
             mint_lamports,
             TOKEN_MINT_ACCOUNT_SPACE,
-            &spl_token_interface::id(),
+            token_program_id,
         ),
-        spl_token_interface::instruction::initialize_mint(
-            &spl_token_interface::id(),
+        create_initialize_mint_instruction(
+            token_program_id,
             mint_pubkey,
             authority_pubkey,
             freeze_authority_pubkey,
             decimals,
-        )
-        .map_err(|e| {
-            diagnosed_error!("failed to create token mint initialization instruction: {}", e)
-        })?,
+        )?,
     ];
 
     if initial_supply > 0 {
         let authority_token_account =
-            spl_associated_token_account_interface::address::get_associated_token_address(
+            spl_associated_token_account_interface::address::get_associated_token_address_with_program_id(
                 authority_pubkey,
                 mint_pubkey,
+                token_program_id,
             );
         instructions.push(
             spl_associated_token_account_interface::instruction::create_associated_token_account_idempotent(
                 payer_pubkey,
                 authority_pubkey,
                 mint_pubkey,
-                &spl_token_interface::id(),
+                token_program_id,
             ),
         );
 
         let signer_pubkey_refs = signer_pubkeys.iter().collect::<Vec<_>>();
-        instructions.push(
-            spl_token_interface::instruction::mint_to(
-                &spl_token_interface::id(),
-                mint_pubkey,
-                &authority_token_account,
-                authority_pubkey,
-                &signer_pubkey_refs,
-                initial_supply,
-            )
-            .map_err(|e| diagnosed_error!("failed to create token mint-to instruction: {}", e))?,
-        );
+        instructions.push(create_mint_to_instruction(
+            token_program_id,
+            mint_pubkey,
+            &authority_token_account,
+            authority_pubkey,
+            &signer_pubkey_refs,
+            initial_supply,
+        )?);
     }
 
     Ok(instructions)
@@ -182,11 +259,11 @@ lazy_static! {
                     internal: false,
                     sensitive: false
                 },
-                commitment_level: {
-                    documentation: "The commitment level expected for considering this action as done ('processed', 'confirmed', 'finalized'). The default is 'confirmed'.",
-                    typing: Type::string(),
+                token_program_id: {
+                    documentation: "The optional token program id to use for the token mint. If omitted, the standard SPL Token program id will be used. Supported values are the SPL Token and Token-2022 program ids.",
+                    typing: Type::addon(SVM_PUBKEY),
                     optional: true,
-                    tainting: false,
+                    tainting: true,
                     internal: false,
                     sensitive: false
                 }
@@ -320,6 +397,20 @@ impl CommandImplementation for DeployToken {
         let mint_keypair = Keypair::new();
         let mint_pubkey = mint_keypair.pubkey();
 
+        let token_program_id = args
+            .get_value(TOKEN_PROGRAM_ID)
+            .map(|id| {
+                SvmValue::to_pubkey(id).map_err(|e| {
+                    (
+                        signers.clone(),
+                        payer_signer_state.clone(),
+                        diagnosed_error!("invalid token program id: {}", e),
+                    )
+                })
+            })
+            .transpose()?
+            .unwrap_or(spl_token_interface::id());
+
         let client = RpcClient::new(rpc_api_url);
         let mint_lamports = client
             .get_minimum_balance_for_rent_exemption(TOKEN_MINT_ACCOUNT_SPACE as usize)
@@ -340,6 +431,7 @@ impl CommandImplementation for DeployToken {
             initial_supply,
             mint_lamports,
             &signer_pubkeys,
+            &token_program_id,
         )
         .map_err(|e| (signers.clone(), payer_signer_state.clone(), e))?;
 
@@ -561,6 +653,7 @@ mod tests {
         let input_names = deploy_token_input_names();
 
         assert!(input_names.contains(&PAYER.to_string()));
+        assert!(input_names.contains(&TOKEN_PROGRAM_ID.to_string()));
         assert!(!input_names.contains(&"mint_keypair".to_string()));
         assert!(!input_names.contains(&"mint".to_string()));
         assert!(!input_names.contains(&"rpc_api_url".to_string()));
@@ -583,6 +676,7 @@ mod tests {
             0,
             mint_lamports,
             &[payer],
+            &spl_token_interface::id(),
         )
         .unwrap();
 
@@ -636,6 +730,7 @@ mod tests {
             initial_supply,
             500,
             &[payer],
+            &spl_token_interface::id(),
         )
         .unwrap();
 
@@ -669,6 +764,73 @@ mod tests {
     }
 
     #[test]
+    fn builds_token_2022_deployment_instructions() {
+        let payer = new_pubkey(1);
+        let mint = new_pubkey(2);
+        let authority = new_pubkey(3);
+        let initial_supply = 1_000_000;
+
+        let instructions = build_deploy_token_instructions(
+            &payer,
+            &mint,
+            &authority,
+            None,
+            9,
+            initial_supply,
+            500,
+            &[payer],
+            &spl_token_2022_interface::id(),
+        )
+        .unwrap();
+
+        let expected_ata =
+            spl_associated_token_account_interface::address::get_associated_token_address_with_program_id(
+                &authority,
+                &mint,
+                &spl_token_2022_interface::id(),
+            );
+
+        assert_eq!(instructions.len(), 4);
+        match unpack_system_instruction(&instructions[0]) {
+            SystemInstruction::CreateAccount { owner, .. } => {
+                assert_eq!(owner, spl_token_2022_interface::id());
+            }
+            instruction => panic!("expected create account instruction, got {instruction:?}"),
+        }
+        assert_eq!(instructions[1].program_id, spl_token_2022_interface::id());
+        assert_eq!(
+            instructions[2].program_id,
+            spl_associated_token_account_interface::program::id()
+        );
+        assert_eq!(instructions[2].accounts[1].pubkey, expected_ata);
+        assert_eq!(instructions[3].program_id, spl_token_2022_interface::id());
+        assert_eq!(instructions[3].accounts[1].pubkey, expected_ata);
+    }
+
+    #[test]
+    fn rejects_unsupported_token_program_id() {
+        let payer = new_pubkey(1);
+        let mint = new_pubkey(2);
+        let authority = new_pubkey(3);
+        let unsupported_program = new_pubkey(9);
+
+        let err = build_deploy_token_instructions(
+            &payer,
+            &mint,
+            &authority,
+            None,
+            6,
+            0,
+            500,
+            &[payer],
+            &unsupported_program,
+        )
+        .unwrap_err();
+
+        assert!(err.message.contains("unsupported token program id"));
+    }
+
+    #[test]
     fn uses_freeze_authority_when_provided() {
         let payer = new_pubkey(1);
         let mint = new_pubkey(2);
@@ -684,6 +846,7 @@ mod tests {
             0,
             500,
             &[payer],
+            &spl_token_interface::id(),
         )
         .unwrap();
 
@@ -712,6 +875,7 @@ mod tests {
             42,
             500,
             &[signer_one, signer_two],
+            &spl_token_interface::id(),
         )
         .unwrap();
 

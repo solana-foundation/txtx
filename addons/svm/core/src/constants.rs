@@ -50,6 +50,7 @@ pub const IS_DEPLOYMENT: &str = "is_deployment";
 pub const AMOUNT: &str = "amount";
 pub const RECIPIENT: &str = "recipient";
 pub const TOKEN: &str = "token";
+pub const TOKEN_PROGRAM_ID: &str = "token_program_id";
 pub const DECIMALS: &str = "decimals";
 pub const INITIAL_SUPPLY: &str = "initial_supply";
 pub const FUND_RECIPIENT: &str = "fund_recipient";
