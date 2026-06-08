@@ -35,6 +35,10 @@ use crate::typing::SvmValue;
 use super::get_signers_did;
 use super::sign_transaction::{check_signed_executability, run_signed_execution};
 
+// Base SPL Token mint size. Token-2022 mints without extensions use the same size,
+// but Token-2022 extensions require allocating additional account space and
+// initializing extension-specific state before initialize_mint. This command
+// currently creates basic mints only.
 const TOKEN_MINT_ACCOUNT_SPACE: u64 = 82;
 
 fn create_initialize_mint_instruction(
@@ -260,7 +264,7 @@ lazy_static! {
                     sensitive: false
                 },
                 token_program_id: {
-                    documentation: "The optional token program id to use for the token mint. If omitted, the standard SPL Token program id will be used. Supported values are the SPL Token and Token-2022 program ids.",
+                    documentation: "The optional token program id to use for the token mint. If omitted, the standard SPL Token program id will be used. Supported values are the SPL Token and Token-2022 program ids. Token-2022 support creates basic mints only; extensions are not configured or pre-allocated by this command.",
                     typing: Type::addon(SVM_PUBKEY),
                     optional: true,
                     tainting: true,
