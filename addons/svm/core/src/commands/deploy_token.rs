@@ -166,7 +166,12 @@ fn build_deploy_token_instructions(
             ),
         );
 
-        let signer_pubkey_refs = signer_pubkeys.iter().collect::<Vec<_>>();
+        let signer_pubkey_refs =
+            if signer_pubkeys.len() == 1 && signer_pubkeys[0] == *authority_pubkey {
+                Vec::new()
+            } else {
+                signer_pubkeys.iter().collect::<Vec<_>>()
+            };
         instructions.push(create_mint_to_instruction(
             token_program_id,
             mint_pubkey,
@@ -609,10 +614,20 @@ impl CommandImplementation for DeployToken {
         _cloud_service_context: &Option<CloudServiceContext>,
     ) -> CommandExecutionFutureResult {
         let logger = LogDispatcher::new(construct_did.as_uuid(), "svm::deploy_token", &progress_tx);
-        let token_mint_address =
-            SvmValue::to_pubkey(outputs.get_expected_value(TOKEN_MINT_ADDRESS).unwrap()).unwrap();
-        let authority_address =
-            SvmValue::to_pubkey(outputs.get_expected_value(AUTHORITY_ADDRESS).unwrap()).unwrap();
+        let token_mint_address = outputs
+            .get_expected_value(TOKEN_MINT_ADDRESS)
+            .map_err(|e| diagnosed_error!("missing token mint address output: {e}"))
+            .and_then(|value| {
+                SvmValue::to_pubkey(value)
+                    .map_err(|e| diagnosed_error!("invalid token mint address output: {e}"))
+            })?;
+        let authority_address = outputs
+            .get_expected_value(AUTHORITY_ADDRESS)
+            .map_err(|e| diagnosed_error!("missing authority address output: {e}"))
+            .and_then(|value| {
+                SvmValue::to_pubkey(value)
+                    .map_err(|e| diagnosed_error!("invalid authority address output: {e}"))
+            })?;
 
         logger.info("Token Deployment", format!("Deploying token {}", token_mint_address));
         logger.info("Token Deployment", format!("Mint authority: {}", authority_address));
@@ -705,7 +720,7 @@ mod tests {
             6,
             0,
             mint_lamports,
-            &[payer],
+            &[authority],
             &spl_token_interface::id(),
         )
         .unwrap();
@@ -759,7 +774,7 @@ mod tests {
             9,
             initial_supply,
             500,
-            &[payer],
+            &[authority],
             &spl_token_interface::id(),
         )
         .unwrap();
@@ -786,6 +801,8 @@ mod tests {
         assert_eq!(instructions[3].accounts[1].pubkey, expected_ata);
         assert!(instructions[3].accounts[1].is_writable);
         assert_eq!(instructions[3].accounts[2].pubkey, authority);
+        assert!(instructions[3].accounts[2].is_signer);
+        assert_eq!(instructions[3].accounts.len(), 3);
 
         match unpack_token_instruction(&instructions[3]) {
             TokenInstruction::MintTo { amount } => assert_eq!(amount, initial_supply),
@@ -808,7 +825,7 @@ mod tests {
             9,
             initial_supply,
             500,
-            &[payer],
+            &[authority],
             &spl_token_2022_interface::id(),
         )
         .unwrap();
@@ -835,6 +852,9 @@ mod tests {
         assert_eq!(instructions[2].accounts[1].pubkey, expected_ata);
         assert_eq!(instructions[3].program_id, spl_token_2022_interface::id());
         assert_eq!(instructions[3].accounts[1].pubkey, expected_ata);
+        assert_eq!(instructions[3].accounts[2].pubkey, authority);
+        assert!(instructions[3].accounts[2].is_signer);
+        assert_eq!(instructions[3].accounts.len(), 3);
     }
 
     #[test]
