@@ -166,12 +166,11 @@ fn build_deploy_token_instructions(
             ),
         );
 
-        let signer_pubkey_refs =
-            if signer_pubkeys.len() == 1 && signer_pubkeys[0] == *authority_pubkey {
-                Vec::new()
-            } else {
-                signer_pubkeys.iter().collect::<Vec<_>>()
-            };
+        let signer_pubkey_refs = if signer_pubkeys.contains(authority_pubkey) {
+            Vec::new()
+        } else {
+            signer_pubkeys.iter().collect::<Vec<_>>()
+        };
         instructions.push(create_mint_to_instruction(
             token_program_id,
             mint_pubkey,
@@ -808,6 +807,31 @@ mod tests {
             TokenInstruction::MintTo { amount } => assert_eq!(amount, initial_supply),
             instruction => panic!("expected mint_to instruction, got {instruction:?}"),
         }
+    }
+
+    #[test]
+    fn treats_included_authority_as_single_authority_for_mint_to() {
+        let payer = new_pubkey(1);
+        let mint = new_pubkey(2);
+        let authority = new_pubkey(3);
+        let co_signer = new_pubkey(4);
+
+        let instructions = build_deploy_token_instructions(
+            &payer,
+            &mint,
+            &authority,
+            None,
+            9,
+            1_000_000,
+            500,
+            &[authority, co_signer],
+            &spl_token_interface::id(),
+        )
+        .unwrap();
+
+        assert_eq!(instructions[3].accounts[2].pubkey, authority);
+        assert!(instructions[3].accounts[2].is_signer);
+        assert_eq!(instructions[3].accounts.len(), 3);
     }
 
     #[test]
