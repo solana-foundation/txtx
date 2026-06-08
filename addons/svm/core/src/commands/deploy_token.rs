@@ -130,7 +130,6 @@ fn build_deploy_token_instructions(
     decimals: u8,
     initial_supply: u64,
     mint_lamports: u64,
-    signer_pubkeys: &[Pubkey],
     token_program_id: &Pubkey,
 ) -> Result<Vec<Instruction>, Diagnostic> {
     let mut instructions = vec![
@@ -166,11 +165,7 @@ fn build_deploy_token_instructions(
             ),
         );
 
-        let signer_pubkey_refs = if signer_pubkeys.contains(authority_pubkey) {
-            Vec::new()
-        } else {
-            signer_pubkeys.iter().collect::<Vec<_>>()
-        };
+        let signer_pubkey_refs = Vec::new();
         instructions.push(create_mint_to_instruction(
             token_program_id,
             mint_pubkey,
@@ -182,6 +177,20 @@ fn build_deploy_token_instructions(
     }
 
     Ok(instructions)
+}
+
+fn validate_mint_authority_signer(
+    initial_supply: u64,
+    authority_pubkey: &Pubkey,
+    signer_pubkeys: &[Pubkey],
+) -> Result<(), Diagnostic> {
+    if initial_supply > 0 && !signer_pubkeys.contains(authority_pubkey) {
+        return Err(diagnosed_error!(
+            "mint authority must be one of the provided signers when initial_supply is greater than 0; SPL Token multisig mint authorities are not supported by svm::deploy_token"
+        ));
+    }
+
+    Ok(())
 }
 
 fn insert_deploy_token_outputs(
@@ -415,6 +424,9 @@ impl CommandImplementation for DeployToken {
             })?
         };
 
+        validate_mint_authority_signer(initial_supply, &authority_pubkey, &signer_pubkeys)
+            .map_err(|e| (signers.clone(), payer_signer_state.clone(), e))?;
+
         let freeze_authority_pubkey = args
             .get_string(FREEZE_AUTHORITY)
             .map(|freeze_authority| {
@@ -464,7 +476,6 @@ impl CommandImplementation for DeployToken {
             decimals,
             initial_supply,
             mint_lamports,
-            &signer_pubkeys,
             &token_program_id,
         )
         .map_err(|e| (signers.clone(), payer_signer_state.clone(), e))?;
@@ -719,7 +730,6 @@ mod tests {
             6,
             0,
             mint_lamports,
-            &[authority],
             &spl_token_interface::id(),
         )
         .unwrap();
@@ -773,7 +783,6 @@ mod tests {
             9,
             initial_supply,
             500,
-            &[authority],
             &spl_token_interface::id(),
         )
         .unwrap();
@@ -810,31 +819,6 @@ mod tests {
     }
 
     #[test]
-    fn treats_included_authority_as_single_authority_for_mint_to() {
-        let payer = new_pubkey(1);
-        let mint = new_pubkey(2);
-        let authority = new_pubkey(3);
-        let co_signer = new_pubkey(4);
-
-        let instructions = build_deploy_token_instructions(
-            &payer,
-            &mint,
-            &authority,
-            None,
-            9,
-            1_000_000,
-            500,
-            &[authority, co_signer],
-            &spl_token_interface::id(),
-        )
-        .unwrap();
-
-        assert_eq!(instructions[3].accounts[2].pubkey, authority);
-        assert!(instructions[3].accounts[2].is_signer);
-        assert_eq!(instructions[3].accounts.len(), 3);
-    }
-
-    #[test]
     fn builds_token_2022_deployment_instructions() {
         let payer = new_pubkey(1);
         let mint = new_pubkey(2);
@@ -849,7 +833,6 @@ mod tests {
             9,
             initial_supply,
             500,
-            &[authority],
             &spl_token_2022_interface::id(),
         )
         .unwrap();
@@ -896,7 +879,6 @@ mod tests {
             6,
             0,
             500,
-            &[payer],
             &unsupported_program,
         )
         .unwrap_err();
@@ -919,7 +901,6 @@ mod tests {
             2,
             0,
             500,
-            &[payer],
             &spl_token_interface::id(),
         )
         .unwrap();
@@ -933,36 +914,14 @@ mod tests {
     }
 
     #[test]
-    fn preserves_multisig_signer_pubkeys_for_mint_to() {
-        let payer = new_pubkey(1);
-        let mint = new_pubkey(2);
+    fn rejects_initial_supply_when_authority_is_not_a_signer() {
         let authority = new_pubkey(3);
         let signer_one = new_pubkey(4);
         let signer_two = new_pubkey(5);
 
-        let instructions = build_deploy_token_instructions(
-            &payer,
-            &mint,
-            &authority,
-            None,
-            6,
-            42,
-            500,
-            &[signer_one, signer_two],
-            &spl_token_interface::id(),
-        )
-        .unwrap();
+        let err =
+            validate_mint_authority_signer(42, &authority, &[signer_one, signer_two]).unwrap_err();
 
-        assert_eq!(instructions[3].accounts[2].pubkey, authority);
-        assert!(!instructions[3].accounts[2].is_signer);
-        assert_eq!(instructions[3].accounts[3].pubkey, signer_one);
-        assert!(instructions[3].accounts[3].is_signer);
-        assert_eq!(instructions[3].accounts[4].pubkey, signer_two);
-        assert!(instructions[3].accounts[4].is_signer);
-
-        match unpack_token_instruction(&instructions[3]) {
-            TokenInstruction::MintTo { amount } => assert_eq!(amount, 42),
-            instruction => panic!("expected mint_to instruction, got {instruction:?}"),
-        }
+        assert!(err.message.contains("mint authority must be one of the provided signers"));
     }
 }
