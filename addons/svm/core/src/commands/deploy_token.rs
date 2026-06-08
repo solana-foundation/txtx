@@ -20,7 +20,7 @@ use txtx_addon_kit::types::signers::{
     SignerActionsFutureResult, SignerInstance, SignerSignFutureResult, SignersState,
 };
 use txtx_addon_kit::types::stores::ValueStore;
-use txtx_addon_kit::types::types::{RunbookSupervisionContext, Type};
+use txtx_addon_kit::types::types::{RunbookSupervisionContext, Type, Value};
 use txtx_addon_kit::types::ConstructDid;
 use txtx_addon_kit::uuid::Uuid;
 use txtx_addon_network_svm_types::SVM_PUBKEY;
@@ -28,11 +28,10 @@ use txtx_addon_network_svm_types::SVM_PUBKEY;
 use crate::codec::send_transaction::send_transaction_background_task;
 use crate::constants::{
     AUTHORITY, AUTHORITY_ADDRESS, CHECKED_PUBLIC_KEY, DECIMALS, FREEZE_AUTHORITY, INITIAL_SUPPLY,
-    PAYER, RPC_API_URL, SIGNERS, TOKEN_MINT_ADDRESS, TOKEN_PROGRAM_ID, TRANSACTION_BYTES,
+    PAYER, RPC_API_URL, SIGNER, SIGNERS, TOKEN_MINT_ADDRESS, TOKEN_PROGRAM_ID, TRANSACTION_BYTES,
 };
 use crate::typing::SvmValue;
 
-use super::get_signers_did;
 use super::sign_transaction::{check_signed_executability, run_signed_execution};
 
 // Base SPL Token mint size. Token-2022 mints without extensions use the same size,
@@ -179,20 +178,6 @@ fn build_deploy_token_instructions(
     Ok(instructions)
 }
 
-fn validate_mint_authority_signer(
-    initial_supply: u64,
-    authority_pubkey: &Pubkey,
-    signer_pubkeys: &[Pubkey],
-) -> Result<(), Diagnostic> {
-    if initial_supply > 0 && !signer_pubkeys.contains(authority_pubkey) {
-        return Err(diagnosed_error!(
-            "mint authority must be one of the provided signers when initial_supply is greater than 0; SPL Token multisig mint authorities are not supported by svm::deploy_token"
-        ));
-    }
-
-    Ok(())
-}
-
 fn insert_deploy_token_outputs(
     signer_state: &mut ValueStore,
     construct_did: &ConstructDid,
@@ -209,6 +194,33 @@ fn insert_deploy_token_outputs(
         AUTHORITY_ADDRESS,
         SvmValue::pubkey(authority_pubkey.to_bytes().to_vec()),
     );
+}
+
+fn build_internal_signing_args(
+    args: &ValueStore,
+    payer_signer_id: &ConstructDid,
+    authority_signer_id: &ConstructDid,
+    initial_supply: u64,
+    transaction: Option<Value>,
+) -> (ValueStore, Vec<ConstructDid>) {
+    let mut signing_ids = vec![payer_signer_id.clone()];
+    if initial_supply > 0 && authority_signer_id != payer_signer_id {
+        signing_ids.push(authority_signer_id.clone());
+    }
+
+    let mut signing_args = args.clone();
+    if let Some(transaction) = transaction {
+        signing_args.insert(TRANSACTION_BYTES, transaction);
+    }
+    // The public deploy_token API uses payer/authority; the shared signing flow
+    // still expects internal signer/signers arguments.
+    signing_args.insert(SIGNER, Value::string(payer_signer_id.to_string()));
+    signing_args.insert(
+        SIGNERS,
+        Value::array(signing_ids.iter().map(|id| Value::string(id.to_string())).collect()),
+    );
+
+    (signing_args, signing_ids)
 }
 
 lazy_static! {
@@ -245,7 +257,7 @@ lazy_static! {
                     sensitive: false
                 },
                 authority: {
-                    documentation: "The pubkey of the mint authority. If omitted, the first signer will be used.",
+                    documentation: "An optional reference to a signer construct whose public key will be used as the mint authority. If omitted, payer will be used. This signer is required to sign when initial_supply is greater than 0 and differs from payer.",
                     typing: Type::string(),
                     optional: true,
                     tainting: true,
@@ -253,9 +265,9 @@ lazy_static! {
                     sensitive: false
                 },
                 payer: {
-                    documentation: "A reference to a signer construct, which will be used to pay for token mint account creation. If omitted, the first signer will be used.",
+                    documentation: "A reference to a signer construct, which will be used to pay for token mint account creation.",
                     typing: Type::string(),
-                    optional: true,
+                    optional: false,
                     tainting: true,
                     internal: false,
                     sensitive: false
@@ -264,14 +276,6 @@ lazy_static! {
                     documentation: "The optional pubkey of the freeze authority for the token mint.",
                     typing: Type::string(),
                     optional: true,
-                    tainting: true,
-                    internal: false,
-                    sensitive: false
-                },
-                signers: {
-                    documentation: "A set of references to signer constructs, which will be used to sign the token deployment transaction.",
-                    typing: Type::array(Type::string()),
-                    optional: false,
                     tainting: true,
                     internal: false,
                     sensitive: false
@@ -304,7 +308,7 @@ lazy_static! {
                     description = "Deploy an SPL token"
                     decimals = 6
                     initial_supply = 1000000
-                    signers = [signer.authority]
+                    payer = signer.payer
                 }"#
             },
       }
@@ -330,34 +334,33 @@ impl CommandImplementation for DeployToken {
         mut signers: SignersState,
         auth_context: &txtx_addon_kit::types::AuthorizationContext,
     ) -> SignerActionsFutureResult {
-        let signers_did = get_signers_did(args)
-            .map_err(|e| (signers.clone(), ValueStore::tmp(), diagnosed_error!("{e}")))?;
-        let first_signer_did = signers_did.first().cloned().ok_or_else(|| {
-            (signers.clone(), ValueStore::tmp(), diagnosed_error!("signers list is empty"))
-        })?;
-
-        let signers_states = signers_did
-            .iter()
-            .map(|did| {
-                signers.get_signer_state(did).cloned().ok_or_else(|| {
-                    (
-                        signers.clone(),
-                        ValueStore::tmp(),
-                        diagnosed_error!("signer state not found for signer {}", did),
-                    )
-                })
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        let payer_signer_did =
-            super::get_custom_signer_did(args, PAYER).unwrap_or_else(|_| first_signer_did.clone());
+        let payer_signer_id = super::get_custom_signer_did(args, PAYER)
+            .map_err(|e| (signers.clone(), ValueStore::tmp(), e))?;
+        let authority_signer_id = super::get_custom_signer_did(args, AUTHORITY)
+            .unwrap_or_else(|_| payer_signer_id.clone());
         let mut payer_signer_state =
-            signers.pop_signer_state(&payer_signer_did).ok_or_else(|| {
+            signers.pop_signer_state(&payer_signer_id).ok_or_else(|| {
                 (
                     signers.clone(),
                     ValueStore::tmp(),
-                    diagnosed_error!("signer state not found for payer {}", payer_signer_did),
+                    diagnosed_error!("signer state not found for payer {}", payer_signer_id),
                 )
             })?;
+
+        let authority_signer_state = if authority_signer_id == payer_signer_id {
+            payer_signer_state.clone()
+        } else {
+            signers.get_signer_state(&authority_signer_id).cloned().ok_or_else(|| {
+                (
+                    signers.clone(),
+                    payer_signer_state.clone(),
+                    diagnosed_error!(
+                        "signer state not found for authority {}",
+                        authority_signer_id
+                    ),
+                )
+            })?
+        };
 
         let decimals = args
             .get_expected_uint(DECIMALS)
@@ -380,21 +383,6 @@ impl CommandImplementation for DeployToken {
             .map_err(|e| (signers.clone(), payer_signer_state.clone(), e))?
             .to_string();
 
-        let mut signer_pubkeys = vec![];
-        for signer_state in signers_states.iter() {
-            let signer_pubkey = signer_state
-                .get_expected_string(CHECKED_PUBLIC_KEY)
-                .map_err(|e| (signers.clone(), signer_state.clone(), diagnosed_error!("{e}")))?;
-            let signer_pubkey = Pubkey::from_str(signer_pubkey).map_err(|e| {
-                (
-                    signers.clone(),
-                    signer_state.clone(),
-                    diagnosed_error!("invalid signer pubkey: {}", e),
-                )
-            })?;
-            signer_pubkeys.push(signer_pubkey);
-        }
-
         let payer_pubkey = payer_signer_state
             .get_expected_string(CHECKED_PUBLIC_KEY)
             .map_err(|e| (signers.clone(), payer_signer_state.clone(), diagnosed_error!("{e}")))?;
@@ -406,26 +394,17 @@ impl CommandImplementation for DeployToken {
             )
         })?;
 
-        let authority_pubkey = if let Some(authority_pubkey) = args.get_string(AUTHORITY) {
-            Pubkey::from_str(authority_pubkey).map_err(|e| {
-                (
-                    signers.clone(),
-                    payer_signer_state.clone(),
-                    diagnosed_error!("invalid authority pubkey: {}", e),
-                )
-            })?
-        } else {
-            *signer_pubkeys.first().ok_or_else(|| {
-                (
-                    signers.clone(),
-                    payer_signer_state.clone(),
-                    diagnosed_error!("signers list is empty"),
-                )
-            })?
-        };
-
-        validate_mint_authority_signer(initial_supply, &authority_pubkey, &signer_pubkeys)
-            .map_err(|e| (signers.clone(), payer_signer_state.clone(), e))?;
+        let authority_pubkey =
+            authority_signer_state.get_expected_string(CHECKED_PUBLIC_KEY).map_err(|e| {
+                (signers.clone(), authority_signer_state.clone(), diagnosed_error!("{e}"))
+            })?;
+        let authority_pubkey = Pubkey::from_str(authority_pubkey).map_err(|e| {
+            (
+                signers.clone(),
+                authority_signer_state.clone(),
+                diagnosed_error!("invalid authority pubkey: {}", e),
+            )
+        })?;
 
         let freeze_authority_pubkey = args
             .get_string(FREEZE_AUTHORITY)
@@ -502,24 +481,12 @@ impl CommandImplementation for DeployToken {
         let transaction = SvmValue::transaction(&transaction)
             .map_err(|diag| (signers.clone(), payer_signer_state.clone(), diag))?;
 
-        let mut args = args.clone();
-        args.insert(TRANSACTION_BYTES, transaction);
-        let mut effective_signers_did = vec![payer_signer_did.clone()];
-        if initial_supply > 0 {
-            for signer_did in signers_did.iter() {
-                if !effective_signers_did.contains(signer_did) {
-                    effective_signers_did.push(signer_did.clone());
-                }
-            }
-        }
-        args.insert(
-            SIGNERS,
-            txtx_addon_kit::types::types::Value::array(
-                effective_signers_did
-                    .iter()
-                    .map(|d| txtx_addon_kit::types::types::Value::string(d.to_string()))
-                    .collect(),
-            ),
+        let (signing_args, signing_ids) = build_internal_signing_args(
+            args,
+            &payer_signer_id,
+            &authority_signer_id,
+            initial_supply,
+            Some(transaction),
         );
 
         insert_deploy_token_outputs(
@@ -528,15 +495,15 @@ impl CommandImplementation for DeployToken {
             &mint_pubkey,
             &authority_pubkey,
         );
-        for signer_did in effective_signers_did.iter() {
-            if signer_did == &payer_signer_did {
+        for signer_id in signing_ids.iter() {
+            if signer_id == &payer_signer_id {
                 continue;
             }
-            let Some(signer_state) = signers.get_signer_state_mut(signer_did) else {
+            let Some(signer_state) = signers.get_signer_state_mut(signer_id) else {
                 return Err((
                     signers.clone(),
                     payer_signer_state.clone(),
-                    diagnosed_error!("signer state not found for signer {}", signer_did),
+                    diagnosed_error!("signer state not found for signer {}", signer_id),
                 ));
             };
             insert_deploy_token_outputs(
@@ -551,7 +518,7 @@ impl CommandImplementation for DeployToken {
         let res = check_signed_executability(
             construct_did,
             instance_name,
-            &args,
+            &signing_args,
             supervision_context,
             signers_instances,
             signers,
@@ -574,8 +541,25 @@ impl CommandImplementation for DeployToken {
         let construct_did = construct_did.clone();
 
         let future = async move {
+            let payer_signer_id = super::get_custom_signer_did(&args, PAYER)
+                .map_err(|e| (signers.clone(), ValueStore::tmp(), e))?;
+            let authority_signer_id = super::get_custom_signer_did(&args, AUTHORITY)
+                .unwrap_or_else(|_| payer_signer_id.clone());
+            let initial_supply = args
+                .get_uint(INITIAL_SUPPLY)
+                .map_err(|e| (signers.clone(), ValueStore::tmp(), diagnosed_error!("{e}")))?
+                .unwrap_or(0);
+
+            let (signing_args, _) = build_internal_signing_args(
+                &args,
+                &payer_signer_id,
+                &authority_signer_id,
+                initial_supply,
+                None,
+            );
+
             let run_signing_future =
-                run_signed_execution(&construct_did, &args, &signers_instances, signers);
+                run_signed_execution(&construct_did, &signing_args, &signers_instances, signers);
             let (signers, signer_state, mut res_signing) = match run_signing_future {
                 Ok(future) => match future.await {
                     Ok(res) => res,
@@ -682,6 +666,19 @@ mod tests {
         }
     }
 
+    fn deploy_token_input_optional(input_name: &str) -> bool {
+        match &*DEPLOY_TOKEN {
+            PreCommandSpecification::Atomic(spec) => {
+                spec.inputs
+                    .iter()
+                    .find(|input| input.name == input_name)
+                    .expect("input should exist")
+                    .optional
+            }
+            PreCommandSpecification::Composite(_) => panic!("deploy_token should be atomic"),
+        }
+    }
+
     #[test]
     fn stores_deployment_outputs_in_signer_state() {
         let construct_did = ConstructDid(Did::from_components(vec![b"deploy_token"]));
@@ -704,15 +701,41 @@ mod tests {
     }
 
     #[test]
+    fn builds_internal_signing_args_from_payer_and_authority() {
+        let payer_did = ConstructDid(Did::from_components(vec![b"payer"]));
+        let authority_did = ConstructDid(Did::from_components(vec![b"authority"]));
+        let args = ValueStore::tmp();
+
+        let (signing_args, signing_ids) =
+            build_internal_signing_args(&args, &payer_did, &authority_did, 0, None);
+        assert_eq!(signing_ids, vec![payer_did.clone()]);
+        assert_eq!(signing_args.get_expected_string(SIGNER).unwrap(), payer_did.to_string());
+        let signers = signing_args.get_expected_array(SIGNERS).unwrap();
+        assert_eq!(signers[0].expect_string(), payer_did.to_string());
+
+        let (signing_args, signing_ids) =
+            build_internal_signing_args(&args, &payer_did, &authority_did, 1, None);
+        assert_eq!(signing_ids, vec![payer_did.clone(), authority_did.clone()]);
+        assert_eq!(signing_args.get_expected_string(SIGNER).unwrap(), payer_did.to_string());
+        let signers = signing_args.get_expected_array(SIGNERS).unwrap();
+        assert_eq!(signers[0].expect_string(), payer_did.to_string());
+        assert_eq!(signers[1].expect_string(), authority_did.to_string());
+    }
+
+    #[test]
     fn exposes_requested_command_inputs() {
         let input_names = deploy_token_input_names();
 
+        assert!(input_names.contains(&AUTHORITY.to_string()));
         assert!(input_names.contains(&PAYER.to_string()));
         assert!(input_names.contains(&TOKEN_PROGRAM_ID.to_string()));
+        assert!(!input_names.contains(&SIGNERS.to_string()));
         assert!(!input_names.contains(&"mint_keypair".to_string()));
         assert!(!input_names.contains(&"mint".to_string()));
         assert!(!input_names.contains(&"rpc_api_url".to_string()));
         assert!(!input_names.contains(&"rpc_api_auth_token".to_string()));
+        assert!(!deploy_token_input_optional(PAYER));
+        assert!(deploy_token_input_optional(AUTHORITY));
     }
 
     #[test]
@@ -911,17 +934,5 @@ mod tests {
             }
             instruction => panic!("expected initialize mint instruction, got {instruction:?}"),
         }
-    }
-
-    #[test]
-    fn rejects_initial_supply_when_authority_is_not_a_signer() {
-        let authority = new_pubkey(3);
-        let signer_one = new_pubkey(4);
-        let signer_two = new_pubkey(5);
-
-        let err =
-            validate_mint_authority_signer(42, &authority, &[signer_one, signer_two]).unwrap_err();
-
-        assert!(err.message.contains("mint authority must be one of the provided signers"));
     }
 }
