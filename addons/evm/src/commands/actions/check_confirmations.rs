@@ -178,16 +178,11 @@ impl CommandImplementation for CheckEvmConfirmations {
         let tx_hash_bytes = inputs.get_expected_buffer_bytes(TX_HASH)?;
         let rpc_api_url = inputs.get_expected_string(RPC_API_URL)?.to_owned();
 
-        let progress_symbol = ["|", "/", "-", "\\", "|", "/", "-", "\\"];
-
         let tx_hash = hex::encode(&tx_hash_bytes);
         let receipt_msg = format!("Checking Tx 0x{} Receipt on Chain {}", &tx_hash, chain_name);
 
         let future = async move {
             // initial progress status
-
-            let mut progress = 0;
-
             logger.pending_info("Pending", receipt_msg);
 
             let mut result = CommandExecutionResult::new();
@@ -200,8 +195,6 @@ impl CommandImplementation for CheckEvmConfirmations {
             let mut current_block = 0;
             let mut previous_block = 0;
             let _receipt = loop {
-                progress = (progress + 1) % progress_symbol.len();
-
                 let Some(receipt) = rpc.get_receipt(&tx_hash_bytes).await.map_err(|e| {
                     diagnosed_error!("failed to verify transaction {}: {}", tx_hash, e)
                 })?
