@@ -26,9 +26,11 @@ use txtx_addon_kit::uuid::Uuid;
 use txtx_addon_network_svm_types::SVM_PUBKEY;
 
 use crate::codec::send_transaction::send_transaction_background_task;
+use crate::codec::DeploymentTransaction;
 use crate::constants::{
     AUTHORITY, AUTHORITY_ADDRESS, CHECKED_PUBLIC_KEY, DECIMALS, FREEZE_AUTHORITY, INITIAL_SUPPLY,
-    PAYER, RPC_API_URL, SIGNER, SIGNERS, TOKEN_MINT_ADDRESS, TOKEN_PROGRAM_ID, TRANSACTION_BYTES,
+    IS_DEPLOYMENT, PAYER, RPC_API_URL, SIGNER, SIGNERS, TOKEN_MINT_ADDRESS, TOKEN_PROGRAM_ID,
+    TRANSACTION_BYTES,
 };
 use crate::typing::SvmValue;
 
@@ -187,12 +189,12 @@ fn insert_deploy_token_outputs(
     signer_state.insert_scoped_value(
         &construct_did.to_string(),
         TOKEN_MINT_ADDRESS,
-        SvmValue::pubkey(mint_pubkey.to_bytes().to_vec()),
+        Value::String(mint_pubkey.to_string()),
     );
     signer_state.insert_scoped_value(
         &construct_did.to_string(),
         AUTHORITY_ADDRESS,
-        SvmValue::pubkey(authority_pubkey.to_bytes().to_vec()),
+        Value::String(authority_pubkey.to_string()),
     );
 }
 
@@ -212,6 +214,12 @@ fn build_internal_signing_args(
     if let Some(transaction) = transaction {
         signing_args.insert(TRANSACTION_BYTES, transaction);
     }
+    // The transaction is a DeploymentTransaction carrying the ephemeral mint keypair.
+    // Marking the internal signing flow as a deployment makes the signer co-sign the
+    // mint and the payer/authority at one freshly fetched blockhash. This flag stays
+    // internal to signing; the command's own args (used by build_background_task) are
+    // unaffected, so submission still runs the standard send path.
+    signing_args.insert(IS_DEPLOYMENT, Value::bool(true));
     // The public deploy_token API uses payer/authority; the shared signing flow
     // still expects internal signer/signers arguments.
     signing_args.insert(SIGNER, Value::string(payer_signer_id.to_string()));
@@ -468,17 +476,16 @@ impl CommandImplementation for DeployToken {
             )
         })?;
 
-        let mut transaction = Transaction::new_unsigned(message);
-        transaction
-            .try_partial_sign(&[&mint_keypair], transaction.message.recent_blockhash)
-            .map_err(|e| {
-                (
-                    signers.clone(),
-                    payer_signer_state.clone(),
-                    diagnosed_error!("failed to sign token mint account creation: {}", e),
-                )
-            })?;
-        let transaction = SvmValue::transaction(&transaction)
+        // The mint is an ephemeral signer. We intentionally do NOT sign here: in
+        // supervised mode the recent blockhash is refreshed at signing time (after the
+        // user approves), so a signature made now would be bound to a stale blockhash
+        // and also trip the orchestrator's "signed with a different blockhash" guard.
+        // Instead the mint keypair is carried in the DeploymentTransaction and
+        // co-signed alongside the payer/authority at the same fresh blockhash by the
+        // signer (see secret_key/web_wallet deployment branches).
+        let transaction = Transaction::new_unsigned(message);
+        let transaction = DeploymentTransaction::deploy_token(&transaction, vec![&mint_keypair])
+            .to_value()
             .map_err(|diag| (signers.clone(), payer_signer_state.clone(), diag))?;
 
         let (signing_args, signing_ids) = build_internal_signing_args(
@@ -550,12 +557,23 @@ impl CommandImplementation for DeployToken {
                 .map_err(|e| (signers.clone(), ValueStore::tmp(), diagnosed_error!("{e}")))?
                 .unwrap_or(0);
 
+            // The DeploymentTransaction (carrying the ephemeral mint keypair) was built
+            // and stored in the payer's signer state during check_signed_executability.
+            // On the deployment path the shared run_signed_execution reads it from
+            // TRANSACTION_BYTES in the signing args, so thread it back in here.
+            let transaction = signers
+                .get_signer_state(&payer_signer_id)
+                .and_then(|state| {
+                    state.get_scoped_value(&construct_did.to_string(), TRANSACTION_BYTES)
+                })
+                .cloned();
+
             let (signing_args, _) = build_internal_signing_args(
                 &args,
                 &payer_signer_id,
                 &authority_signer_id,
                 initial_supply,
-                None,
+                transaction,
             );
 
             let run_signing_future =
@@ -710,6 +728,9 @@ mod tests {
             build_internal_signing_args(&args, &payer_did, &authority_did, 0, None);
         assert_eq!(signing_ids, vec![payer_did.clone()]);
         assert_eq!(signing_args.get_expected_string(SIGNER).unwrap(), payer_did.to_string());
+        // The mint is co-signed at signing time via the deployment path, so the internal
+        // signing flow must be flagged as a deployment.
+        assert_eq!(signing_args.get_bool(IS_DEPLOYMENT), Some(true));
         let signers = signing_args.get_expected_array(SIGNERS).unwrap();
         assert_eq!(signers[0].expect_string(), payer_did.to_string());
 

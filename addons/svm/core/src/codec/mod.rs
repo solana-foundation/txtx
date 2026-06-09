@@ -241,6 +241,22 @@ impl DeploymentTransaction {
         )
     }
 
+    /// Builds a single-transaction token deployment. The `keypairs` are the ephemeral
+    /// mint keypair(s) that must be co-signed at the same recent blockhash as the txtx
+    /// signer(s); `signers: Some(..)` marks that a txtx signer (payer/authority) must
+    /// also sign, so the signer re-signs the mint and signs the payer in one step at a
+    /// freshly fetched blockhash.
+    pub fn deploy_token(transaction: &Transaction, keypairs: Vec<&Keypair>) -> Self {
+        Self::new(
+            transaction,
+            keypairs,
+            Some(vec![TxtxDeploymentSigner::Payer]),
+            DeploymentTransactionType::DeployToken,
+            CommitmentLevel::Confirmed,
+            true,
+        )
+    }
+
     pub fn upgrade_program(transaction: &Transaction, keypairs: Vec<&Keypair>) -> Self {
         Self::new(
             transaction,
@@ -393,6 +409,9 @@ impl DeploymentTransaction {
             DeploymentTransactionType::TransferBufferAuthority => return Ok(None),
             DeploymentTransactionType::TransferProgramAuthority => return Ok(None),
             DeploymentTransactionType::DeployProgram => "This transaction will deploy the program.",
+            DeploymentTransactionType::DeployToken => {
+                "This transaction will create and initialize the token mint."
+            }
             DeploymentTransactionType::UpgradeProgram => {
                 "This transaction will upgrade the program."
             }
