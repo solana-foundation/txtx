@@ -277,11 +277,20 @@ pub fn borsh_encode_value_to_idl_type(
                 let bytes = value.get_buffer_bytes_result().map_err(|_| mismatch_err("vec"))?;
                 borsh_encode_bytes_to_idl_type(&bytes, idl_type, idl_types)
             }
-            Value::Array(vec) => vec
-                .iter()
-                .map(|v| borsh_encode_value_to_idl_type(v, idl_type, idl_types, None))
-                .collect::<Result<Vec<_>, _>>()
-                .map(|v| v.into_iter().flatten().collect::<Vec<_>>()),
+            Value::Array(vec) => {
+                // borsh `Vec<T>` is a u32 little-endian length prefix followed by the
+                // encoded elements. The length prefix must be written even when the
+                // elements are pre-encoded buffers (e.g. svm::u64(..)).
+                let len = u32::try_from(vec.len())
+                    .map_err(|_| format!("vec length {} exceeds u32::MAX", vec.len()))?;
+                let mut encoded = len.to_le_bytes().to_vec();
+                for v in vec.iter() {
+                    let mut element =
+                        borsh_encode_value_to_idl_type(v, idl_type, idl_types, None)?;
+                    encoded.append(&mut element);
+                }
+                Ok(encoded)
+            }
             _ => Err(mismatch_err("vec")),
         },
         IdlType::Array(idl_type, idl_array_len) => {
@@ -814,4 +823,41 @@ pub fn get_field_offset_in_account(
     }
 
     Err(diagnosed_error!("field '{}' not found in account type definition", field_name))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Regression test for https://github.com/solana-foundation/txtx/issues/408:
+    // borsh `Vec<T>` args must be encoded with a u32 little-endian length prefix.
+    #[test]
+    fn vec_u64_is_length_prefixed() {
+        let value = Value::array(vec![
+            SvmValue::u64(1),
+            SvmValue::u64(2),
+            SvmValue::u64(3),
+        ]);
+        let idl_type = IdlType::Vec(Box::new(IdlType::U64));
+
+        let encoded = borsh_encode_value_to_idl_type(&value, &idl_type, &vec![], None).unwrap();
+
+        // Must match borsh::to_vec(&vec![1u64, 2, 3]).
+        let expected = borsh::to_vec(&vec![1u64, 2u64, 3u64]).unwrap();
+        assert_eq!(encoded, expected);
+
+        // Explicitly: 4-byte length prefix (3) + three little-endian u64s.
+        assert_eq!(&encoded[0..4], &3u32.to_le_bytes());
+        assert_eq!(encoded.len(), 4 + 3 * 8);
+    }
+
+    #[test]
+    fn empty_vec_encodes_zero_length() {
+        let value = Value::array(vec![]);
+        let idl_type = IdlType::Vec(Box::new(IdlType::U64));
+
+        let encoded = borsh_encode_value_to_idl_type(&value, &idl_type, &vec![], None).unwrap();
+
+        assert_eq!(encoded, 0u32.to_le_bytes().to_vec());
+    }
 }
