@@ -275,7 +275,13 @@ pub fn borsh_encode_value_to_idl_type(
         IdlType::Vec(idl_type) => match value {
             Value::String(_) => {
                 let bytes = value.get_buffer_bytes_result().map_err(|_| mismatch_err("vec"))?;
-                borsh_encode_bytes_to_idl_type(&bytes, idl_type, idl_types)
+                // Route the raw buffer through the full `Vec<T>` type rather than the
+                // inner element type, so it is borsh-encoded as a vector with its u32
+                // length prefix. Only `Vec<u8>` is representable as a raw buffer; other
+                // element types error here instead of silently emitting
+                // length-prefix-less data.
+                let vec_type = IdlType::Vec(idl_type.clone());
+                borsh_encode_bytes_to_idl_type(&bytes, &vec_type, idl_types)
             }
             Value::Array(vec) => {
                 // borsh `Vec<T>` is a u32 little-endian length prefix followed by the
@@ -859,5 +865,33 @@ mod tests {
         let encoded = borsh_encode_value_to_idl_type(&value, &idl_type, &vec![], None).unwrap();
 
         assert_eq!(encoded, 0u32.to_le_bytes().to_vec());
+    }
+
+    // A `Vec<u8>` supplied as a raw buffer (Value::String) must also get the u32
+    // length prefix, matching borsh `Vec<u8>` encoding.
+    #[test]
+    fn vec_u8_from_buffer_is_length_prefixed() {
+        let value = Value::string("0x010203".to_string());
+        let idl_type = IdlType::Vec(Box::new(IdlType::U8));
+
+        let encoded = borsh_encode_value_to_idl_type(&value, &idl_type, &vec![], None).unwrap();
+
+        let expected = borsh::to_vec(&vec![1u8, 2u8, 3u8]).unwrap();
+        assert_eq!(encoded, expected);
+        assert_eq!(&encoded[0..4], &3u32.to_le_bytes());
+        assert_eq!(encoded.len(), 4 + 3);
+    }
+
+    // A non-`u8` element type cannot be represented as a raw buffer; encoding such
+    // a buffer must error rather than silently emit length-prefix-less data.
+    #[test]
+    fn vec_u64_from_buffer_errors() {
+        let value =
+            Value::string("0x0100000000000000".to_string());
+        let idl_type = IdlType::Vec(Box::new(IdlType::U64));
+
+        let result = borsh_encode_value_to_idl_type(&value, &idl_type, &vec![], None);
+
+        assert!(result.is_err());
     }
 }
