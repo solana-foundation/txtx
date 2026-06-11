@@ -1,6 +1,7 @@
 use crate::constants::{SIGNER, SIGNERS};
 use deploy_program::DEPLOY_PROGRAM;
 use deploy_subraph::DEPLOY_SUBGRAPH;
+use deploy_token::DEPLOY_TOKEN;
 use process_instructions::PROCESS_INSTRUCTIONS;
 use send_sol::SEND_SOL;
 use send_token::SEND_TOKEN;
@@ -15,6 +16,7 @@ use txtx_addon_kit::types::{diagnostics::Diagnostic, ConstructDid, Did};
 
 pub mod deploy_program;
 pub mod deploy_subraph;
+pub mod deploy_token;
 pub mod process_instructions;
 pub mod send_sol;
 pub mod send_token;
@@ -76,6 +78,7 @@ lazy_static! {
     pub static ref ACTIONS: Vec<PreCommandSpecification> = vec![
         PROCESS_INSTRUCTIONS.clone(),
         DEPLOY_PROGRAM.clone(),
+        DEPLOY_TOKEN.clone(),
         SEND_SOL.clone(),
         SEND_TOKEN.clone(),
         DEPLOY_SUBGRAPH.clone(),
