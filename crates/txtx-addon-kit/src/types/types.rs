@@ -1313,22 +1313,23 @@ impl TryFrom<String> for Type {
             "bool" => Type::Bool,
             "buffer" => Type::Buffer,
             "object" => Type::Object(ObjectDefinition::arbitrary()),
+            "map" => Type::Map(ObjectDefinition::arbitrary()),
             other => {
                 if other == "null" {
                     return Ok(Type::null());
                 }
-                if other.starts_with("null<") && other.ends_with(">") {
-                    let mut inner = other.replace("null<", "");
-                    inner = inner.replace(">", "");
-                    let inner_type = Type::try_from(inner)?;
+                if let Some(inner) = other.strip_prefix("null<").and_then(|s| s.strip_suffix(">"))
+                {
+                    let inner_type = Type::try_from(inner.to_string())?;
                     return Ok(Type::typed_null(inner_type));
-                } else if other.starts_with("array[") && other.ends_with("]") {
-                    let inner = &other["array[".len()..other.len() - 1];
+                } else if let Some(inner) =
+                    other.strip_prefix("array[").and_then(|s| s.strip_suffix("]"))
+                {
                     return Ok(Type::array(Type::try_from(inner.to_string())?));
-                } else if other.starts_with("addon(") {
-                    let mut inner = other.replace("addon(", "");
-                    inner = inner.replace(")", "");
-                    Type::addon(&inner)
+                } else if let Some(inner) =
+                    other.strip_prefix("addon(").and_then(|s| s.strip_suffix(")"))
+                {
+                    Type::addon(inner)
                 } else {
                     return Err(format!("invalid type: {}", other));
                 }
