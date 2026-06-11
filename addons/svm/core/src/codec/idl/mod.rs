@@ -268,20 +268,41 @@ pub fn borsh_encode_value_to_idl_type(
             if let Some(_) = value.as_null() {
                 borsh::to_vec(&None::<u8>).map_err(|e| encode_err("Optional", &e))
             } else {
-                let encoded_arg = borsh_encode_value_to_idl_type(value, idl_type, idl_types, None)?;
-                borsh::to_vec(&Some(encoded_arg)).map_err(|e| encode_err("Optional", &e))
+                // borsh `Option<T>` is a 1-byte tag followed by the encoded inner
+                // value. `borsh_encode_value_to_idl_type` already returns `borsh(T)`,
+                // so it must be appended directly. Passing it through `borsh::to_vec`
+                // again would re-serialize it as a `Vec<u8>` and inject a spurious
+                // u32 length prefix before the payload.
+                let mut encoded = vec![1u8];
+                encoded.extend(borsh_encode_value_to_idl_type(value, idl_type, idl_types, None)?);
+                Ok(encoded)
             }
         }
         IdlType::Vec(idl_type) => match value {
             Value::String(_) => {
                 let bytes = value.get_buffer_bytes_result().map_err(|_| mismatch_err("vec"))?;
-                borsh_encode_bytes_to_idl_type(&bytes, idl_type, idl_types)
+                // Route the raw buffer through the full `Vec<T>` type rather than the
+                // inner element type, so it is borsh-encoded as a vector with its u32
+                // length prefix. Only `Vec<u8>` is representable as a raw buffer; other
+                // element types error here instead of silently emitting
+                // length-prefix-less data.
+                let vec_type = IdlType::Vec(idl_type.clone());
+                borsh_encode_bytes_to_idl_type(&bytes, &vec_type, idl_types)
             }
-            Value::Array(vec) => vec
-                .iter()
-                .map(|v| borsh_encode_value_to_idl_type(v, idl_type, idl_types, None))
-                .collect::<Result<Vec<_>, _>>()
-                .map(|v| v.into_iter().flatten().collect::<Vec<_>>()),
+            Value::Array(vec) => {
+                // borsh `Vec<T>` is a u32 little-endian length prefix followed by the
+                // encoded elements. The length prefix must be written even when the
+                // elements are pre-encoded buffers (e.g. svm::u64(..)).
+                let len = u32::try_from(vec.len())
+                    .map_err(|_| format!("vec length {} exceeds u32::MAX", vec.len()))?;
+                let mut encoded = len.to_le_bytes().to_vec();
+                for v in vec.iter() {
+                    let mut element =
+                        borsh_encode_value_to_idl_type(v, idl_type, idl_types, None)?;
+                    encoded.append(&mut element);
+                }
+                Ok(encoded)
+            }
             _ => Err(mismatch_err("vec")),
         },
         IdlType::Array(idl_type, idl_array_len) => {
@@ -718,10 +739,13 @@ fn borsh_encode_bytes_to_idl_type(
             if bytes.is_empty() {
                 borsh::to_vec(&None::<u8>).map_err(|e| format!("failed to encode None: {}", e))
             } else {
-                // Otherwise encode as Some with inner bytes
-                let inner_encoded = borsh_encode_bytes_to_idl_type(bytes, inner_type, idl_types)?;
-                borsh::to_vec(&Some(inner_encoded))
-                    .map_err(|e| format!("failed to encode Option: {}", e))
+                // borsh `Option<T>` is a 1-byte tag followed by the encoded inner
+                // value. `borsh_encode_bytes_to_idl_type` already returns `borsh(T)`,
+                // so append it directly; routing it back through `borsh::to_vec` would
+                // re-encode it as a `Vec<u8>` and inject a spurious u32 length prefix.
+                let mut encoded = vec![1u8];
+                encoded.extend(borsh_encode_bytes_to_idl_type(bytes, inner_type, idl_types)?);
+                Ok(encoded)
             }
         }
         IdlType::Defined { name, .. } => {
@@ -814,4 +838,112 @@ pub fn get_field_offset_in_account(
     }
 
     Err(diagnosed_error!("field '{}' not found in account type definition", field_name))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Regression test for https://github.com/solana-foundation/txtx/issues/408:
+    // borsh `Vec<T>` args must be encoded with a u32 little-endian length prefix.
+    #[test]
+    fn vec_u64_is_length_prefixed() {
+        let value = Value::array(vec![
+            SvmValue::u64(1),
+            SvmValue::u64(2),
+            SvmValue::u64(3),
+        ]);
+        let idl_type = IdlType::Vec(Box::new(IdlType::U64));
+
+        let encoded = borsh_encode_value_to_idl_type(&value, &idl_type, &vec![], None).unwrap();
+
+        // Must match borsh::to_vec(&vec![1u64, 2, 3]).
+        let expected = borsh::to_vec(&vec![1u64, 2u64, 3u64]).unwrap();
+        assert_eq!(encoded, expected);
+
+        // Explicitly: 4-byte length prefix (3) + three little-endian u64s.
+        assert_eq!(&encoded[0..4], &3u32.to_le_bytes());
+        assert_eq!(encoded.len(), 4 + 3 * 8);
+    }
+
+    #[test]
+    fn empty_vec_encodes_zero_length() {
+        let value = Value::array(vec![]);
+        let idl_type = IdlType::Vec(Box::new(IdlType::U64));
+
+        let encoded = borsh_encode_value_to_idl_type(&value, &idl_type, &vec![], None).unwrap();
+
+        assert_eq!(encoded, 0u32.to_le_bytes().to_vec());
+    }
+
+    // A `Vec<u8>` supplied as a raw buffer (Value::String) must also get the u32
+    // length prefix, matching borsh `Vec<u8>` encoding.
+    #[test]
+    fn vec_u8_from_buffer_is_length_prefixed() {
+        let value = Value::string("0x010203".to_string());
+        let idl_type = IdlType::Vec(Box::new(IdlType::U8));
+
+        let encoded = borsh_encode_value_to_idl_type(&value, &idl_type, &vec![], None).unwrap();
+
+        let expected = borsh::to_vec(&vec![1u8, 2u8, 3u8]).unwrap();
+        assert_eq!(encoded, expected);
+        assert_eq!(&encoded[0..4], &3u32.to_le_bytes());
+        assert_eq!(encoded.len(), 4 + 3);
+    }
+
+    // A non-`u8` element type cannot be represented as a raw buffer; encoding such
+    // a buffer must error rather than silently emit length-prefix-less data.
+    #[test]
+    fn vec_u64_from_buffer_errors() {
+        let value =
+            Value::string("0x0100000000000000".to_string());
+        let idl_type = IdlType::Vec(Box::new(IdlType::U64));
+
+        let result = borsh_encode_value_to_idl_type(&value, &idl_type, &vec![], None);
+
+        assert!(result.is_err());
+    }
+
+    // borsh `Option<T>` is a 1-byte tag plus the encoded inner value, with no
+    // extra length prefix injected before the payload.
+    #[test]
+    fn option_some_has_no_extra_length_prefix() {
+        let value = SvmValue::u64(5);
+        let idl_type = IdlType::Option(Box::new(IdlType::U64));
+
+        let encoded = borsh_encode_value_to_idl_type(&value, &idl_type, &vec![], None).unwrap();
+
+        let expected = borsh::to_vec(&Some(5u64)).unwrap();
+        assert_eq!(encoded, expected);
+        // 1-byte Some tag + 8-byte u64, nothing in between.
+        assert_eq!(encoded.len(), 1 + 8);
+        assert_eq!(encoded[0], 1);
+    }
+
+    #[test]
+    fn option_none_encodes_zero_tag() {
+        let value = Value::null();
+        let idl_type = IdlType::Option(Box::new(IdlType::U64));
+
+        let encoded = borsh_encode_value_to_idl_type(&value, &idl_type, &vec![], None).unwrap();
+
+        assert_eq!(encoded, borsh::to_vec(&None::<u64>).unwrap());
+    }
+
+    // `Option<Vec<T>>` exercises the value (array) encoding path: the inner Vec
+    // keeps its own length prefix and the Option adds only the 1-byte tag.
+    #[test]
+    fn option_some_vec_keeps_single_length_prefix() {
+        let value = Value::array(vec![SvmValue::u64(1), SvmValue::u64(2)]);
+        let idl_type = IdlType::Option(Box::new(IdlType::Vec(Box::new(IdlType::U64))));
+
+        let encoded = borsh_encode_value_to_idl_type(&value, &idl_type, &vec![], None).unwrap();
+
+        let expected = borsh::to_vec(&Some(vec![1u64, 2u64])).unwrap();
+        assert_eq!(encoded, expected);
+        // 1-byte Some tag + 4-byte Vec length prefix + two little-endian u64s.
+        assert_eq!(encoded.len(), 1 + 4 + 2 * 8);
+        assert_eq!(encoded[0], 1);
+        assert_eq!(&encoded[1..5], &2u32.to_le_bytes());
+    }
 }
