@@ -86,7 +86,7 @@ pub fn arg_checker_with_ctx(
                             }
                             // we don't have an "any" type, so if the array is of type null, we won't check types
                             if let Type::Array(inner) = typing {
-                                if let Type::Null(_) = **inner {
+                                if matches!(**inner, Type::Null | Type::TypedNull(_)) {
                                     has_type_match = true;
                                     break;
                                 }

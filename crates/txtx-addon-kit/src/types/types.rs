@@ -8,6 +8,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::{Map, Value as JsonValue};
 use std::collections::VecDeque;
 use std::fmt::{self, Debug};
+use strum::Display as StrumDisplay;
 
 use crate::helpers::hcl::{
     collect_constructs_references_from_block, collect_constructs_references_from_expression,
@@ -1021,17 +1022,29 @@ impl fmt::Debug for AddonData {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+#[derive(Clone, Debug, Eq, PartialEq, Hash, StrumDisplay)]
 pub enum Type {
+    #[strum(serialize = "bool")]
     Bool,
-    Null(Option<Box<Type>>),
+    #[strum(serialize = "null")]
+    Null,
+    #[strum(to_string = "null<{0}>")]
+    TypedNull(Box<Type>),
+    #[strum(serialize = "integer")]
     Integer,
+    #[strum(serialize = "float")]
     Float,
+    #[strum(serialize = "string")]
     String,
+    #[strum(serialize = "buffer")]
     Buffer,
+    #[strum(to_string = "object")]
     Object(ObjectDefinition),
+    #[strum(to_string = "addon({0})")]
     Addon(String),
+    #[strum(to_string = "array[{0}]")]
     Array(Box<Type>),
+    #[strum(to_string = "map")]
     Map(ObjectDefinition),
 }
 
@@ -1046,10 +1059,10 @@ impl Type {
         Type::Float
     }
     pub fn null() -> Type {
-        Type::Null(None)
+        Type::Null
     }
     pub fn typed_null(inner: Type) -> Type {
-        Type::Null(Some(Box::new(inner)))
+        Type::TypedNull(Box::new(inner))
     }
     pub fn bool() -> Type {
         Type::Bool
@@ -1099,15 +1112,14 @@ impl Type {
 
         match &self {
             Type::Bool => value.as_bool().map(|_| ()).ok_or_else(|| mismatch_err("bool"))?,
-            Type::Null(inner) => {
-                if let Some(inner) = inner {
-                    value
-                        .as_null()
-                        .map(|_| ())
-                        .ok_or_else(|| mismatch_err(&format!("null<{}>", inner.to_string())))?
-                } else {
-                    value.as_null().map(|_| ()).ok_or_else(|| mismatch_err("null"))?
-                }
+            Type::Null => {
+                value.as_null().map(|_| ()).ok_or_else(|| mismatch_err("null"))?
+            }
+            Type::TypedNull(inner) => {
+                value
+                    .as_null()
+                    .map(|_| ())
+                    .ok_or_else(|| mismatch_err(&format!("null<{}>", inner)))?
             }
             Type::Integer => {
                 value.as_integer().map(|_| ()).ok_or_else(|| mismatch_err("integer"))?
@@ -1275,29 +1287,6 @@ impl Type {
     }
 }
 
-impl Type {
-    pub fn to_string(&self) -> String {
-        match self {
-            Type::Bool => "bool".into(),
-            Type::Null(inner) => {
-                if let Some(inner) = inner {
-                    format!("null<{}>", inner.to_string())
-                } else {
-                    "null".into()
-                }
-            }
-            Type::Integer => "integer".into(),
-            Type::Float => "float".into(),
-            Type::String => "string".into(),
-            Type::Buffer => "buffer".into(),
-            Type::Object(_) => "object".into(),
-            Type::Addon(addon) => format!("addon({})", addon),
-            Type::Array(typing) => format!("array[{}]", typing.to_string()),
-            Type::Map(_) => "map".into(),
-        }
-    }
-}
-
 impl Default for Type {
     fn default() -> Self {
         Type::string()
@@ -1317,19 +1306,30 @@ impl TryFrom<String> for Type {
                 if other == "null" {
                     return Ok(Type::null());
                 }
-                if other.starts_with("null<") && other.ends_with(">") {
-                    let mut inner = other.replace("null<", "");
-                    inner = inner.replace(">", "");
-                    let inner_type = Type::try_from(inner)?;
+                if let Some(inner) = other.strip_prefix("null<").and_then(|s| s.strip_suffix(">"))
+                {
+                    if inner.is_empty() {
+                        return Err("invalid type: null<> (empty inner type)".to_string());
+                    }
+                    let inner_type = Type::try_from(inner.to_string())
+                        .map_err(|e| format!("invalid type in null<{}>: {}", inner, e))?;
                     return Ok(Type::typed_null(inner_type));
-                } else if other.starts_with("array[") && other.ends_with("]") {
-                    let mut inner = other.replace("array[", "");
-                    inner = inner.replace("]", "");
-                    return Type::try_from(inner);
-                } else if other.starts_with("addon(") {
-                    let mut inner = other.replace("addon(", "");
-                    inner = inner.replace(")", "");
-                    Type::addon(&inner)
+                } else if let Some(inner) =
+                    other.strip_prefix("array[").and_then(|s| s.strip_suffix("]"))
+                {
+                    if inner.is_empty() {
+                        return Err("invalid type: array[] (empty inner type)".to_string());
+                    }
+                    let inner_type = Type::try_from(inner.to_string())
+                        .map_err(|e| format!("invalid type in array[{}]: {}", inner, e))?;
+                    return Ok(Type::array(inner_type));
+                } else if let Some(inner) =
+                    other.strip_prefix("addon(").and_then(|s| s.strip_suffix(")"))
+                {
+                    if inner.is_empty() {
+                        return Err("invalid type: addon() (empty addon id)".to_string());
+                    }
+                    Type::addon(inner)
                 } else {
                     return Err(format!("invalid type: {}", other));
                 }
