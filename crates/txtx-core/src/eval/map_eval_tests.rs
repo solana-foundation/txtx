@@ -588,6 +588,53 @@ instruction {
     );
 }
 
+/// Regression test for the `program_idl`-dropped bug. When an instruction
+/// attribute (e.g. `program_idl = variable.<...>.idl`) can't resolve on the
+/// current pass, the input is marked in `unevaluated_inputs` so it gets
+/// re-evaluated later. A sibling account block whose values resolve cleanly
+/// must NOT wipe that marker — otherwise the input is never re-evaluated and
+/// `program_idl` stays permanently missing.
+///
+/// We simulate the prior-pass marker by seeding `unevaluated_inputs`, then
+/// evaluate a block whose only child block resolves cleanly, and assert the
+/// marker survives. Before the fix at eval/mod.rs:2434 (assign instead of
+/// merge) the clean child overwrote it to empty and this assertion failed.
+#[test]
+fn arbitrary_map_clean_child_block_preserves_unevaluated_marker() {
+    let (deps, pkg, ws, exec, rt) = make_contexts();
+
+    let mut parent_result = EvaluateMapObjectPropResult::new();
+    parent_result.unevaluated_inputs.insert("instruction".to_string(), None);
+
+    let blocks = parse_blocks(
+        r#"
+instruction {
+    extra_account {
+        public_key = "literal_pubkey"
+    }
+}
+"#,
+    );
+
+    let result = evaluate_arbitrary_inputs_map(
+        "instruction",
+        parent_result,
+        blocks,
+        &deps,
+        &pkg,
+        &ws,
+        &exec,
+        &rt,
+    )
+    .expect("evaluation should succeed");
+
+    assert!(
+        result.unevaluated_inputs.contains_key("instruction"),
+        "a cleanly-resolving child block must not clear a pre-existing unevaluated marker \
+         (regression: overwrite at eval/mod.rs:2434)"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // evaluate_map_object_prop tests
 // ---------------------------------------------------------------------------
@@ -842,6 +889,51 @@ entry {
     assert_eq!(
         account_arr[0].as_object().unwrap().get("addr").unwrap(),
         &Value::string("0xabc".to_string())
+    );
+}
+
+/// Strict-map counterpart of `arbitrary_map_clean_child_block_preserves_unevaluated_marker`.
+/// Guards the identical overwrite-vs-merge bug at eval/mod.rs:2573, hit when a
+/// strict map prop is itself a nested map whose child block resolves cleanly.
+#[test]
+fn strict_map_clean_child_map_preserves_unevaluated_marker() {
+    let (deps, pkg, ws, exec, rt) = make_contexts();
+
+    let props = vec![make_object_prop(
+        "metadata",
+        Type::Map(ObjectDefinition::Arbitrary(None)),
+    )];
+
+    let mut parent_result = EvaluateMapObjectPropResult::new();
+    parent_result.unevaluated_inputs.insert("entry".to_string(), None);
+
+    let blocks = parse_blocks(
+        r#"
+entry {
+    metadata {
+        key = "v"
+    }
+}
+"#,
+    );
+
+    let result = evaluate_map_object_prop(
+        "entry",
+        parent_result,
+        blocks,
+        &props,
+        &deps,
+        &pkg,
+        &ws,
+        &exec,
+        &rt,
+    )
+    .expect("evaluation should succeed");
+
+    assert!(
+        result.unevaluated_inputs.contains_key("entry"),
+        "a cleanly-resolving child map must not clear a pre-existing unevaluated marker \
+         (regression: overwrite at eval/mod.rs:2573)"
     );
 }
 

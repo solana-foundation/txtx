@@ -2431,7 +2431,7 @@ fn evaluate_arbitrary_inputs_map(
                     runbook_execution_context,
                     runtime_context,
                 )?;
-                parent_result.unevaluated_inputs = child_block_result.unevaluated_inputs;
+                parent_result.unevaluated_inputs.merge(&child_block_result.unevaluated_inputs);
                 let mut diags = parent_result.diags.clone();
                 diags.extend(child_block_result.diags);
                 parent_result.diags = diags;
@@ -2570,7 +2570,7 @@ fn evaluate_map_object_prop(
                     }
                 };
 
-                parent_result.unevaluated_inputs = res.unevaluated_inputs;
+                parent_result.unevaluated_inputs.merge(&res.unevaluated_inputs);
                 let mut diags = parent_result.diags.clone();
                 diags.extend(res.diags);
                 parent_result.diags = diags;
