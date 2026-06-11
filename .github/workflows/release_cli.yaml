@@ -94,6 +94,8 @@ jobs:
 
       - name: Install Foundry
         uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: "1.5.1"
 
       # set up rust for all targets
       - name: Install Rust toolchain
