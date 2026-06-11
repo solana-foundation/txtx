@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use crate::helpers::fs::FileLocation;
 use crate::types::AuthorizationContext;
 
-use super::types::Value;
+use super::types::{ObjectDefinition, Type, Value};
 use serde_json::json;
 use serde_json::Value as JsonValue;
 use test_case::test_case;
@@ -35,6 +35,36 @@ fn it_serdes_values(value: Value) {
     let de: Value = serde_json::from_str(&ser).unwrap();
     println!("deserialized:  {:?}\n", de);
     assert_eq!(de, value);
+}
+
+#[test_case(Type::string())]
+#[test_case(Type::integer())]
+#[test_case(Type::float())]
+#[test_case(Type::bool())]
+#[test_case(Type::buffer())]
+#[test_case(Type::null())]
+#[test_case(Type::typed_null(Type::integer()))]
+#[test_case(Type::typed_null(Type::typed_null(Type::integer())); "nested typed null")]
+#[test_case(Type::array(Type::integer()))]
+#[test_case(Type::array(Type::array(Type::string())); "nested array")]
+#[test_case(Type::array(Type::typed_null(Type::integer())); "array of typed null")]
+#[test_case(Type::addon("ns::type"))]
+#[test_case(Type::array(Type::addon("ns::type")); "array of addon")]
+#[test_case(Type::object(ObjectDefinition::arbitrary()))]
+#[test_case(Type::map(ObjectDefinition::arbitrary()))]
+#[test_case(Type::array(Type::map(ObjectDefinition::arbitrary())); "array of map")]
+fn it_serdes_types(typing: Type) {
+    let ser = serde_json::to_string(&typing).unwrap();
+    let de: Type = serde_json::from_str(&ser).unwrap();
+    assert_eq!(de, typing);
+}
+
+#[test_case("array[integer"; "unterminated array")]
+#[test_case("addon(ns::type"; "unterminated addon")]
+#[test_case("null<integer"; "unterminated null")]
+#[test_case("array[nope]"; "array of invalid type")]
+fn it_rejects_malformed_type_strings(s: &str) {
+    assert!(Type::try_from(s.to_string()).is_err(), "expected error for {:?}", s);
 }
 
 #[test_case(json!({"type": "integer", "value": "1" }))]
