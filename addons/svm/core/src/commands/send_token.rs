@@ -25,12 +25,13 @@ use txtx_addon_kit::uuid::Uuid;
 use crate::codec::send_transaction::send_transaction_background_task;
 use crate::constants::{
     AMOUNT, AUTHORITY, AUTHORITY_ADDRESS, CHECKED_PUBLIC_KEY, FUND_RECIPIENT, IS_FUNDING_RECIPIENT,
-    RECIPIENT, RECIPIENT_ADDRESS, RECIPIENT_TOKEN_ADDRESS, RPC_API_URL, SOURCE_TOKEN_ADDRESS,
-    TOKEN, TOKEN_MINT_ADDRESS, TRANSACTION_BYTES,
+    MINT, MINT_ADDRESS, RECIPIENT, RECIPIENT_ADDRESS, RECIPIENT_ATA, RPC_API_URL, SENDER_ATA,
+    TRANSACTION_BYTES,
 };
 use crate::typing::{SvmValue, SVM_PUBKEY};
 
 use super::get_signers_did;
+use super::setup_surfnet::tokens::get_token_by_name;
 use super::sign_transaction::{check_signed_executability, run_signed_execution};
 
 lazy_static! {
@@ -58,8 +59,8 @@ lazy_static! {
                     internal: false,
                     sensitive: false
                 },
-                token: {
-                    documentation: "The program address for the token being sent. This is also known as the 'token mint account'.",
+                mint: {
+                    documentation: "The program address for the token being sent. This is also known as the 'token mint account'. You may also provide the symbol of known mints such as 'usdc', 'wsol', or 'usdt'.",
                     typing: Type::string(),
                     optional: false,
                     tainting: true,
@@ -128,16 +129,24 @@ lazy_static! {
                     documentation: "The transaction computed signature.",
                     typing: Type::string()
                 },
-                recipient_token_address: {
-                    documentation: "The recipient token account address.",
+                recipient_associated_token_address: {
+                    documentation: "The recipient derived associated token account address.",
                     typing: Type::addon(SVM_PUBKEY)
                 },
-                source_token_address: {
-                    documentation: "The source token account address.",
+                sender_associated_token_address: {
+                    documentation: "The sender derived associated token account address.",
                     typing: Type::addon(SVM_PUBKEY)
                 },
-                token_mint_address: {
+                mint_address: {
                     documentation: "The token mint address.",
+                    typing: Type::addon(SVM_PUBKEY)
+                },
+                authority_address: {
+                    documentation: "The sender account address.",
+                    typing: Type::addon(SVM_PUBKEY)
+                },
+                recipient_address: {
+                    documentation: "The recipient account address.",
                     typing: Type::addon(SVM_PUBKEY)
                 }
             ],
@@ -185,17 +194,20 @@ impl CommandImplementation for SendToken {
             .get_expected_uint(AMOUNT)
             .map_err(|e| (signers.clone(), signer_state.clone(), e))?;
 
-        let token_mint_address = Pubkey::from_str(
-            args.get_expected_string(TOKEN)
-                .map_err(|e| (signers.clone(), signer_state.clone(), e))?,
-        )
-        .map_err(|e| {
-            (
-                signers.clone(),
-                signer_state.clone(),
-                diagnosed_error!("invalid token pubkey: {}", e.to_string()),
-            )
-        })?;
+        let mint_address_str = args
+            .get_expected_string(MINT)
+            .map_err(|e| (signers.clone(), signer_state.clone(), e))?;
+
+        let mint_address = match get_token_by_name("mainnet", mint_address_str) {
+            Some(addr) => addr,
+            _ => Pubkey::from_str(mint_address_str).map_err(|e| {
+                (
+                    signers.clone(),
+                    signer_state.clone(),
+                    diagnosed_error!("invalid mint pubkey: {}", e.to_string()),
+                )
+            })?,
+        };
 
         let recipient = Pubkey::from_str(
             args.get_expected_string(RECIPIENT)
@@ -242,21 +254,34 @@ impl CommandImplementation for SendToken {
             signer_pubkeys[0].clone()
         };
 
-        let source_token_address =
-            spl_associated_token_account_interface::address::get_associated_token_address(
+        let client = RpcClient::new(rpc_api_url);
+
+        let token_program_id = match client.get_account(&mint_address) {
+            Ok(e) => e.owner,
+            Err(e) => Err((
+                signers.clone(),
+                signer_state.clone(),
+                diagnosed_error!("failed to get token account: {}", e.to_string()),
+            ))?,
+        };
+
+        let sender_ata =
+            spl_associated_token_account_interface::address::get_associated_token_address_with_program_id(
                 &authority_pubkey,
-                &token_mint_address,
+                &mint_address,
+                &token_program_id
             );
-        let recipient_token_address =
-            spl_associated_token_account_interface::address::get_associated_token_address(
+        let recipient_ata =
+            spl_associated_token_account_interface::address::get_associated_token_address_with_program_id(
                 &recipient,
-                &token_mint_address,
+                &mint_address,
+                &token_program_id
             );
 
         let mut instructions = VecDeque::from([spl_token_interface::instruction::transfer(
-            &spl_token_interface::id(),
-            &source_token_address,
-            &recipient_token_address,
+            &token_program_id,
+            &sender_ata,
+            &recipient_ata,
             &authority_pubkey,
             &signer_pubkeys.iter().map(|s| s).collect::<Vec<_>>(),
             amount,
@@ -269,9 +294,7 @@ impl CommandImplementation for SendToken {
             )
         })?]);
 
-        let client = RpcClient::new(rpc_api_url);
-
-        let do_create_account = match client.get_account(&recipient_token_address) {
+        let do_create_account = match client.get_account(&recipient_ata) {
             Ok(recipient_account) => recipient_account.lamports == 0,
             Err(e) => {
                 if e.to_string().contains("AccountNotFound") {
@@ -294,11 +317,12 @@ impl CommandImplementation for SendToken {
             if args.get_bool(FUND_RECIPIENT).unwrap_or(false) {
                 is_funding_recipient = true;
                 instructions.push_front(
-                    spl_associated_token_account_interface::instruction::create_associated_token_account(
+                    // eihther change create_ata to idempotent, or do a getAccount rpc call to see if acc exists
+                    spl_associated_token_account_interface::instruction::create_associated_token_account_idempotent(
                         &authority_pubkey,
                         &recipient,
-                        &token_mint_address,
-                        &spl_token_interface::id(),
+                        &mint_address,
+                        &token_program_id,
                     ),
                 );
             } else {
@@ -330,8 +354,8 @@ impl CommandImplementation for SendToken {
 
         signer_state.insert_scoped_value(
             &construct_did.to_string(),
-            RECIPIENT_TOKEN_ADDRESS,
-            SvmValue::pubkey(recipient_token_address.to_bytes().to_vec()),
+            RECIPIENT_ATA,
+            SvmValue::pubkey(recipient_ata.to_bytes().to_vec()),
         );
         signer_state.insert_scoped_value(
             &construct_did.to_string(),
@@ -340,8 +364,8 @@ impl CommandImplementation for SendToken {
         );
         signer_state.insert_scoped_value(
             &construct_did.to_string(),
-            SOURCE_TOKEN_ADDRESS,
-            SvmValue::pubkey(source_token_address.to_bytes().to_vec()),
+            SENDER_ATA,
+            SvmValue::pubkey(sender_ata.to_bytes().to_vec()),
         );
         signer_state.insert_scoped_value(
             &construct_did.to_string(),
@@ -350,8 +374,8 @@ impl CommandImplementation for SendToken {
         );
         signer_state.insert_scoped_value(
             &construct_did.to_string(),
-            TOKEN_MINT_ADDRESS,
-            SvmValue::pubkey(token_mint_address.to_bytes().to_vec()),
+            MINT_ADDRESS,
+            SvmValue::pubkey(mint_address.to_bytes().to_vec()),
         );
         signer_state.insert_scoped_value(
             &construct_did.to_string(),
@@ -397,33 +421,29 @@ impl CommandImplementation for SendToken {
                 Err(err) => return Err(err),
             };
 
-            let recipient_token_address = signer_state
-                .get_scoped_value(&construct_did.to_string(), RECIPIENT_TOKEN_ADDRESS)
-                .unwrap();
             let recipient_address = signer_state
                 .get_scoped_value(&construct_did.to_string(), RECIPIENT_ADDRESS)
                 .unwrap();
-            let source_token_address = signer_state
-                .get_scoped_value(&construct_did.to_string(), SOURCE_TOKEN_ADDRESS)
-                .unwrap();
+
             let authority_address = signer_state
                 .get_scoped_value(&construct_did.to_string(), AUTHORITY_ADDRESS)
                 .unwrap();
-            let token_mint_address = signer_state
-                .get_scoped_value(&construct_did.to_string(), TOKEN_MINT_ADDRESS)
-                .unwrap();
+            let token_mint_address =
+                signer_state.get_scoped_value(&construct_did.to_string(), MINT_ADDRESS).unwrap();
             let is_funding_recipient = signer_state
                 .get_scoped_value(&construct_did.to_string(), IS_FUNDING_RECIPIENT)
                 .unwrap();
+            let recipient_ata =
+                signer_state.get_scoped_value(&construct_did.to_string(), RECIPIENT_ATA).unwrap();
+            let sender_ata =
+                signer_state.get_scoped_value(&construct_did.to_string(), SENDER_ATA).unwrap();
 
-            res_signing
-                .outputs
-                .insert(RECIPIENT_TOKEN_ADDRESS.into(), recipient_token_address.clone());
             res_signing.outputs.insert(RECIPIENT_ADDRESS.into(), recipient_address.clone());
-            res_signing.outputs.insert(SOURCE_TOKEN_ADDRESS.into(), source_token_address.clone());
             res_signing.outputs.insert(AUTHORITY_ADDRESS.into(), authority_address.clone());
-            res_signing.outputs.insert(TOKEN_MINT_ADDRESS.into(), token_mint_address.clone());
+            res_signing.outputs.insert(MINT_ADDRESS.into(), token_mint_address.clone());
             res_signing.outputs.insert(IS_FUNDING_RECIPIENT.into(), is_funding_recipient.clone());
+            res_signing.outputs.insert(RECIPIENT_ATA.into(), recipient_ata.clone());
+            res_signing.outputs.insert(SENDER_ATA.into(), sender_ata.clone());
 
             Ok((signers, signer_state, res_signing))
         };
@@ -441,40 +461,39 @@ impl CommandImplementation for SendToken {
         _cloud_service_context: &Option<CloudServiceContext>,
     ) -> CommandExecutionFutureResult {
         let logger = LogDispatcher::new(construct_did.as_uuid(), "svm::send_token", &progress_tx);
-        let recipient_token_address =
-            SvmValue::to_pubkey(outputs.get_expected_value(RECIPIENT_TOKEN_ADDRESS).unwrap())
-                .unwrap();
+        let recipient_ata =
+            SvmValue::to_pubkey(outputs.get_expected_value(RECIPIENT_ATA).unwrap()).unwrap();
         let recipient_address =
             SvmValue::to_pubkey(outputs.get_expected_value(RECIPIENT_ADDRESS).unwrap()).unwrap();
-        let source_token_address =
-            SvmValue::to_pubkey(outputs.get_expected_value(SOURCE_TOKEN_ADDRESS).unwrap()).unwrap();
+        let sender_ata =
+            SvmValue::to_pubkey(outputs.get_expected_value(SENDER_ATA).unwrap()).unwrap();
         let authority_address =
             SvmValue::to_pubkey(outputs.get_expected_value(AUTHORITY_ADDRESS).unwrap()).unwrap();
-        let token_mint_address =
-            SvmValue::to_pubkey(outputs.get_expected_value(TOKEN_MINT_ADDRESS).unwrap()).unwrap();
+        let mint_address =
+            SvmValue::to_pubkey(outputs.get_expected_value(MINT_ADDRESS).unwrap()).unwrap();
         let is_funding_recipient = outputs.get_bool(IS_FUNDING_RECIPIENT).unwrap_or(false);
 
-        logger.info("Token Transfer", format!("Transferring token {}", token_mint_address));
+        logger.info("Token Transfer", format!("Transferring token {}", mint_address));
         logger.info(
             "Token Transfer",
             format!(
-                "Authority {} generated source token account {}",
-                authority_address, source_token_address
+                "Authority {} generated sender associated token account {}",
+                authority_address, sender_ata
             ),
         );
         logger.info(
             "Token Transfer",
             format!(
-                "Recipient {} generated recipient token account {}",
-                recipient_address, recipient_token_address
+                "Recipient {} generated recipient associated token account {}",
+                recipient_address, recipient_ata
             ),
         );
         if is_funding_recipient {
             logger.info(
                 "Token Transfer",
                 format!(
-                    "Authority {} will fund recipient token account {}",
-                    authority_address, recipient_token_address
+                    "Authority {} will fund recipient associated token account {}",
+                    authority_address, recipient_ata
                 ),
             );
         }

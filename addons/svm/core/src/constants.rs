@@ -49,16 +49,15 @@ pub const SIGNATURES: &str = "signatures";
 pub const IS_DEPLOYMENT: &str = "is_deployment";
 pub const AMOUNT: &str = "amount";
 pub const RECIPIENT: &str = "recipient";
-pub const TOKEN: &str = "token";
+pub const MINT: &str = "mint";
 pub const TOKEN_PROGRAM_ID: &str = "token_program_id";
 pub const DECIMALS: &str = "decimals";
 pub const INITIAL_SUPPLY: &str = "initial_supply";
 pub const FUND_RECIPIENT: &str = "fund_recipient";
 pub const AUTHORITY_ADDRESS: &str = "authority_address";
 pub const RECIPIENT_ADDRESS: &str = "recipient_address";
-pub const RECIPIENT_TOKEN_ADDRESS: &str = "recipient_token_address";
-pub const SOURCE_TOKEN_ADDRESS: &str = "source_token_address";
 pub const TOKEN_MINT_ADDRESS: &str = "token_mint_address";
+pub const MINT_ADDRESS: &str = "mint_address";
 pub const IS_FUNDING_RECIPIENT: &str = "is_funding_recipient";
 pub const SET_ACCOUNT: &str = "set_account";
 pub const RESET_ACCOUNT: &str = "reset_account";
@@ -80,6 +79,8 @@ pub const IS_WRITABLE: &str = "is_writable";
 pub const IS_SIGNER: &str = "is_signer";
 pub const REMAINING_ACCOUNT: &str = "remaining_account";
 pub const SKIP_PREFLIGHT: &str = "skip_preflight";
+pub const RECIPIENT_ATA:&str = "recipient_associated_token_address";
+pub const SENDER_ATA:&str = "sender_associated_token_address";
 
 // Subgraph keys
 pub const SLOT: &str = "slot";

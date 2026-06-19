@@ -16,6 +16,7 @@ const MAINNET_RENDER_PROGRAM_ID: &str = "rndrizKT3MK1iimdxRdWabcF7Zg7AR5T4nud4Ek
 const MAINNET_TRUMP_PROGRAM_ID: &str = "6p6xgHyF7AeE6TZkSmFsko444wqoP15icUSqi2jfGiPN";
 const MAINNET_USDC_PROGRAM_ID: &str = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 const MAINNET_USDT_PROGRAM_ID: &str = "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB";
+const MAINNET_WSOL_PROGRAM_ID: &str = "So11111111111111111111111111111111111111112";
 
 pub fn get_token_by_name(network: &str, name: &str) -> Option<Pubkey> {
     match (network, name.to_ascii_lowercase().as_str()) {
@@ -35,6 +36,7 @@ pub fn get_token_by_name(network: &str, name: &str) -> Option<Pubkey> {
         ("mainnet", "trump") => Some(Pubkey::from_str_const(MAINNET_TRUMP_PROGRAM_ID)),
         ("mainnet", "usdc") => Some(Pubkey::from_str_const(MAINNET_USDC_PROGRAM_ID)),
         ("mainnet", "usdt") => Some(Pubkey::from_str_const(MAINNET_USDT_PROGRAM_ID)),
+        ("mainnet", "wsol") => Some(Pubkey::from_str_const(MAINNET_WSOL_PROGRAM_ID)),
         _ => None,
     }
 }
