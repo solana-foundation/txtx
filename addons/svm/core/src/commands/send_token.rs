@@ -2,9 +2,11 @@ use std::collections::{HashMap, VecDeque};
 use std::str::FromStr;
 
 use solana_client::rpc_client::RpcClient;
+use solana_instruction::Instruction;
 use solana_message::Message;
 use solana_pubkey::Pubkey;
 use solana_transaction::Transaction;
+use spl_token_2022_interface::{extension::StateWithExtensions, state::Mint};
 use txtx_addon_kit::channel;
 use txtx_addon_kit::futures::future;
 use txtx_addon_kit::types::cloud_interface::CloudServiceContext;
@@ -33,6 +35,148 @@ use crate::typing::{SvmValue, SVM_PUBKEY};
 use super::get_signers_did;
 use super::setup_surfnet::tokens::get_token_by_name;
 use super::sign_transaction::{check_signed_executability, run_signed_execution};
+
+fn derive_send_token_associated_accounts(
+    authority_pubkey: &Pubkey,
+    mint_address: &Pubkey,
+    recipient: &Pubkey,
+    token_program_id: &Pubkey,
+) -> (Pubkey, Pubkey) {
+    let sender_ata =
+        spl_associated_token_account_interface::address::get_associated_token_address_with_program_id(
+            authority_pubkey,
+            mint_address,
+            token_program_id,
+        );
+    let recipient_ata =
+        spl_associated_token_account_interface::address::get_associated_token_address_with_program_id(
+            recipient,
+            mint_address,
+            token_program_id,
+        );
+    (sender_ata, recipient_ata)
+}
+
+fn create_token_transfer_instruction(
+    token_program_id: &Pubkey,
+    mint_pubkey: &Pubkey,
+    sender_ata: &Pubkey,
+    recipient_ata: &Pubkey,
+    authority_pubkey: &Pubkey,
+    signer_pubkeys: &[&Pubkey],
+    amount: u64,
+    decimals: u8,
+) -> Result<Instruction, Diagnostic> {
+    spl_token_2022_interface::instruction::transfer_checked(
+        token_program_id,
+        sender_ata,
+        mint_pubkey,
+        recipient_ata,
+        authority_pubkey,
+        signer_pubkeys,
+        amount,
+        decimals,
+    )
+    .map_err(|e| diagnosed_error!("failed to create token transfer instruction: {}", e))
+}
+
+fn unpack_mint_decimals(mint_data: &[u8]) -> Result<u8, Diagnostic> {
+    Ok(StateWithExtensions::<Mint>::unpack(mint_data)
+        .map_err(|e| {
+            diagnosed_error!(
+                "failed to unpack mint data: {}. Ensure that the provided mint address is valid and corresponds to a token mint account.",
+                e
+            )
+        })?
+        .base
+        .decimals)
+}
+
+fn build_send_token_instructions(
+    authority_pubkey: &Pubkey,
+    mint_address: &Pubkey,
+    recipient: &Pubkey,
+    token_program_id: &Pubkey,
+    sender_ata: &Pubkey,
+    recipient_ata: &Pubkey,
+    signer_pubkeys: &[Pubkey],
+    amount: u64,
+    decimals: u8,
+    recipient_needs_funding: bool,
+    fund_recipient: bool,
+) -> Result<(VecDeque<Instruction>, bool), Diagnostic> {
+    let signer_pubkey_refs = signer_pubkeys.iter().collect::<Vec<_>>();
+    let mut instructions = VecDeque::from([create_token_transfer_instruction(
+        token_program_id,
+        mint_address,
+        sender_ata,
+        recipient_ata,
+        authority_pubkey,
+        &signer_pubkey_refs,
+        amount,
+        decimals,
+    )?]);
+
+    if !recipient_needs_funding {
+        return Ok((instructions, false));
+    }
+
+    if !fund_recipient {
+        return Err(diagnosed_error!("cannot transfer token because recipient is unfunded; fund the recipient account or use the `fund_recipient = true` option"));
+    }
+
+    instructions.push_front(
+        spl_associated_token_account_interface::instruction::create_associated_token_account(
+            authority_pubkey,
+            recipient,
+            mint_address,
+            token_program_id,
+        ),
+    );
+    Ok((instructions, true))
+}
+
+fn insert_send_token_outputs(
+    signer_state: &mut ValueStore,
+    construct_did: &ConstructDid,
+    recipient_ata: &Pubkey,
+    recipient: &Pubkey,
+    sender_ata: &Pubkey,
+    authority_pubkey: &Pubkey,
+    mint_address: &Pubkey,
+    is_funding_recipient: bool,
+) {
+    signer_state.insert_scoped_value(
+        &construct_did.to_string(),
+        RECIPIENT_ATA,
+        SvmValue::pubkey(recipient_ata.to_bytes().to_vec()),
+    );
+    signer_state.insert_scoped_value(
+        &construct_did.to_string(),
+        RECIPIENT_ADDRESS,
+        SvmValue::pubkey(recipient.to_bytes().to_vec()),
+    );
+    signer_state.insert_scoped_value(
+        &construct_did.to_string(),
+        SENDER_ATA,
+        SvmValue::pubkey(sender_ata.to_bytes().to_vec()),
+    );
+    signer_state.insert_scoped_value(
+        &construct_did.to_string(),
+        AUTHORITY_ADDRESS,
+        SvmValue::pubkey(authority_pubkey.to_bytes().to_vec()),
+    );
+    signer_state.insert_scoped_value(
+        &construct_did.to_string(),
+        MINT_ADDRESS,
+        SvmValue::pubkey(mint_address.to_bytes().to_vec()),
+    );
+    signer_state.insert_scoped_value(
+        &construct_did.to_string(),
+        IS_FUNDING_RECIPIENT,
+        Value::bool(is_funding_recipient),
+    );
+}
 
 lazy_static! {
     pub static ref SEND_TOKEN: PreCommandSpecification = define_command! {
@@ -260,8 +404,8 @@ impl CommandImplementation for SendToken {
 
         let client = RpcClient::new(rpc_api_url);
 
-        let token_program_id = match client.get_account(&mint_address) {
-            Ok(e) => e.owner,
+        let (token_program_id, mint_data) = match client.get_account(&mint_address) {
+            Ok(e) => (e.owner, e.data),
             Err(e) => Err((
                 signers.clone(),
                 signer_state.clone(),
@@ -269,34 +413,12 @@ impl CommandImplementation for SendToken {
             ))?,
         };
 
-        let sender_ata =
-            spl_associated_token_account_interface::address::get_associated_token_address_with_program_id(
-                &authority_pubkey,
-                &mint_address,
-                &token_program_id
-            );
-        let recipient_ata =
-            spl_associated_token_account_interface::address::get_associated_token_address_with_program_id(
-                &recipient,
-                &mint_address,
-                &token_program_id
-            );
-
-        let mut instructions = VecDeque::from([spl_token_interface::instruction::transfer(
-            &token_program_id,
-            &sender_ata,
-            &recipient_ata,
+        let (sender_ata, recipient_ata) = derive_send_token_associated_accounts(
             &authority_pubkey,
-            &signer_pubkeys.iter().map(|s| s).collect::<Vec<_>>(),
-            amount,
-        )
-        .map_err(|e| {
-            (
-                signers.clone(),
-                signer_state.clone(),
-                diagnosed_error!("failed to create token transfer instruction: {}", e.to_string()),
-            )
-        })?]);
+            &mint_address,
+            &recipient,
+            &token_program_id,
+        );
 
         let do_create_account = match client.get_account(&recipient_ata) {
             Ok(recipient_account) => recipient_account.lamports == 0,
@@ -316,29 +438,23 @@ impl CommandImplementation for SendToken {
             }
         };
 
-        let mut is_funding_recipient = false;
-        if do_create_account {
-            if args.get_bool(FUND_RECIPIENT).unwrap_or(false) {
-                is_funding_recipient = true;
-                instructions.push_front(
-                    // eihther change create_ata to idempotent, or do a getAccount rpc call to see if acc exists
-                    spl_associated_token_account_interface::instruction::create_associated_token_account_idempotent(
-                        &authority_pubkey,
-                        &recipient,
-                        &mint_address,
-                        &token_program_id,
-                    ),
-                );
-            } else {
-                return Err(
-                    (
-                        signers.clone(),
-                        signer_state.clone(),
-                        diagnosed_error!("cannot transfer token because recipient is unfunded; fund the recipient account or use the `fund_recipient = true` option")
-                    )
-                );
-            }
-        }
+        let mint_decimals = unpack_mint_decimals(&mint_data)
+            .map_err(|e| (signers.clone(), signer_state.clone(), e))?;
+
+        let (instructions, is_funding_recipient) = build_send_token_instructions(
+            &authority_pubkey,
+            &mint_address,
+            &recipient,
+            &token_program_id,
+            &sender_ata,
+            &recipient_ata,
+            &signer_pubkeys,
+            amount,
+            mint_decimals,
+            do_create_account,
+            args.get_bool(FUND_RECIPIENT).unwrap_or(false),
+        )
+        .map_err(|e| (signers.clone(), signer_state.clone(), e))?;
 
         let mut message =
             Message::new(&instructions.into_iter().collect::<Vec<_>>(), Some(&authority_pubkey));
@@ -356,35 +472,15 @@ impl CommandImplementation for SendToken {
         let mut args = args.clone();
         args.insert(TRANSACTION_BYTES, transaction);
 
-        signer_state.insert_scoped_value(
-            &construct_did.to_string(),
-            RECIPIENT_ATA,
-            SvmValue::pubkey(recipient_ata.to_bytes().to_vec()),
-        );
-        signer_state.insert_scoped_value(
-            &construct_did.to_string(),
-            RECIPIENT_ADDRESS,
-            SvmValue::pubkey(recipient.to_bytes().to_vec()),
-        );
-        signer_state.insert_scoped_value(
-            &construct_did.to_string(),
-            SENDER_ATA,
-            SvmValue::pubkey(sender_ata.to_bytes().to_vec()),
-        );
-        signer_state.insert_scoped_value(
-            &construct_did.to_string(),
-            AUTHORITY_ADDRESS,
-            SvmValue::pubkey(authority_pubkey.to_bytes().to_vec()),
-        );
-        signer_state.insert_scoped_value(
-            &construct_did.to_string(),
-            MINT_ADDRESS,
-            SvmValue::pubkey(mint_address.to_bytes().to_vec()),
-        );
-        signer_state.insert_scoped_value(
-            &construct_did.to_string(),
-            IS_FUNDING_RECIPIENT,
-            Value::bool(is_funding_recipient),
+        insert_send_token_outputs(
+            &mut signer_state,
+            construct_did,
+            &recipient_ata,
+            &recipient,
+            &sender_ata,
+            &authority_pubkey,
+            &mint_address,
+            is_funding_recipient,
         );
 
         signers.push_signer_state(signer_state);
@@ -510,5 +606,302 @@ impl CommandImplementation for SendToken {
             &progress_tx,
             &supervision_context,
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::constants::SIGNERS;
+    use spl_token_interface::instruction::TokenInstruction;
+    use txtx_addon_kit::types::commands::PreCommandSpecification;
+    use txtx_addon_kit::types::Did;
+
+    fn new_pubkey(byte: u8) -> Pubkey {
+        Pubkey::new_from_array([byte; 32])
+    }
+
+    fn unpack_token_instruction(instruction: &Instruction) -> TokenInstruction<'_> {
+        TokenInstruction::unpack(&instruction.data).expect("valid token instruction")
+    }
+
+    fn mint_data_with_decimals(decimals: u8) -> Vec<u8> {
+        let mut mint_data = vec![0; 82];
+        mint_data[44] = decimals;
+        mint_data[45] = 1;
+        mint_data
+    }
+
+    fn send_token_input_names() -> Vec<String> {
+        match &*SEND_TOKEN {
+            PreCommandSpecification::Atomic(spec) => {
+                spec.inputs.iter().map(|i| i.name.clone()).collect()
+            }
+            PreCommandSpecification::Composite(_) => panic!("send_token should be atomic"),
+        }
+    }
+
+    fn send_token_input_optional(input_name: &str) -> bool {
+        match &*SEND_TOKEN {
+            PreCommandSpecification::Atomic(spec) => {
+                spec.inputs
+                    .iter()
+                    .find(|input| input.name == input_name)
+                    .expect("input should exist")
+                    .optional
+            }
+            PreCommandSpecification::Composite(_) => panic!("send_token should be atomic"),
+        }
+    }
+
+    #[test]
+    fn exposes_requested_command_inputs() {
+        let input_names = send_token_input_names();
+
+        assert!(input_names.contains(&AMOUNT.to_string()));
+        assert!(input_names.contains(&MINT.to_string()));
+        assert!(input_names.contains(&RECIPIENT.to_string()));
+        assert!(input_names.contains(&AUTHORITY.to_string()));
+        assert!(input_names.contains(&FUND_RECIPIENT.to_string()));
+        assert!(input_names.contains(&SIGNERS.to_string()));
+        assert!(input_names.contains(&RPC_API_URL.to_string()));
+        assert!(!send_token_input_optional(AMOUNT));
+        assert!(!send_token_input_optional(MINT));
+        assert!(!send_token_input_optional(RECIPIENT));
+        assert!(!send_token_input_optional(SIGNERS));
+        assert!(send_token_input_optional(AUTHORITY));
+        assert!(send_token_input_optional(FUND_RECIPIENT));
+    }
+
+    #[test]
+    fn derives_token_program_specific_associated_accounts() {
+        let authority = new_pubkey(1);
+        let mint = new_pubkey(2);
+        let recipient = new_pubkey(3);
+
+        let (sender_ata, recipient_ata) = derive_send_token_associated_accounts(
+            &authority,
+            &mint,
+            &recipient,
+            &spl_token_2022_interface::id(),
+        );
+
+        assert_eq!(
+            sender_ata,
+            spl_associated_token_account_interface::address::get_associated_token_address_with_program_id(
+                &authority,
+                &mint,
+                &spl_token_2022_interface::id(),
+            )
+        );
+        assert_eq!(
+            recipient_ata,
+            spl_associated_token_account_interface::address::get_associated_token_address_with_program_id(
+                &recipient,
+                &mint,
+                &spl_token_2022_interface::id(),
+            )
+        );
+    }
+
+    #[test]
+    fn unpacks_mint_decimals_from_mint_data() {
+        assert_eq!(unpack_mint_decimals(&mint_data_with_decimals(6)).unwrap(), 6);
+    }
+
+    #[test]
+    fn rejects_invalid_mint_data_when_unpacking_decimals() {
+        let err = unpack_mint_decimals(&[0; 44]).unwrap_err();
+
+        assert!(err.message.contains("failed to unpack mint data"));
+    }
+
+    #[test]
+    fn builds_transfer_instruction_without_recipient_funding() {
+        let authority = new_pubkey(1);
+        let mint = new_pubkey(2);
+        let recipient = new_pubkey(3);
+        let signer = new_pubkey(4);
+        let amount = 5_000;
+        let decimals = 18;
+        let (sender_ata, recipient_ata) = derive_send_token_associated_accounts(
+            &authority,
+            &mint,
+            &recipient,
+            &spl_token_interface::id(),
+        );
+
+        let (instructions, is_funding_recipient) = build_send_token_instructions(
+            &authority,
+            &mint,
+            &recipient,
+            &spl_token_interface::id(),
+            &sender_ata,
+            &recipient_ata,
+            &[signer],
+            amount,
+            decimals,
+            false,
+            false,
+        )
+        .unwrap();
+
+        assert!(!is_funding_recipient);
+        assert_eq!(instructions.len(), 1);
+        let transfer = &instructions[0];
+        assert_eq!(transfer.program_id, spl_token_interface::id());
+        assert_eq!(transfer.accounts[0].pubkey, sender_ata);
+        assert!(transfer.accounts[0].is_writable);
+        assert_eq!(transfer.accounts[1].pubkey, mint);
+        assert!(!transfer.accounts[1].is_writable);
+        assert_eq!(transfer.accounts[2].pubkey, recipient_ata);
+        assert!(transfer.accounts[2].is_writable);
+        assert_eq!(transfer.accounts[3].pubkey, authority);
+        assert!(!transfer.accounts[3].is_writable);
+        assert!(!transfer.accounts[3].is_signer);
+        assert_eq!(transfer.accounts[4].pubkey, signer);
+        assert!(!transfer.accounts[4].is_writable);
+        assert!(transfer.accounts[4].is_signer);
+
+        match unpack_token_instruction(transfer) {
+            TokenInstruction::TransferChecked { amount: actual, decimals: actual_decimals } => {
+                assert_eq!(actual, amount);
+                assert_eq!(actual_decimals, decimals);
+            }
+            instruction => panic!("expected transfer_checked instruction, got {instruction:?}"),
+        }
+    }
+
+    #[test]
+    fn prepends_recipient_funding_instruction_when_requested() {
+        let authority = new_pubkey(1);
+        let mint = new_pubkey(2);
+        let recipient = new_pubkey(3);
+        let (sender_ata, recipient_ata) = derive_send_token_associated_accounts(
+            &authority,
+            &mint,
+            &recipient,
+            &spl_token_2022_interface::id(),
+        );
+
+        let (instructions, is_funding_recipient) = build_send_token_instructions(
+            &authority,
+            &mint,
+            &recipient,
+            &spl_token_2022_interface::id(),
+            &sender_ata,
+            &recipient_ata,
+            &[],
+            1,
+            18,
+            true,
+            true,
+        )
+        .unwrap();
+
+        assert!(is_funding_recipient);
+        assert_eq!(instructions.len(), 2);
+        assert_eq!(
+            instructions[0].program_id,
+            spl_associated_token_account_interface::program::id()
+        );
+        assert_eq!(instructions[0].accounts[0].pubkey, authority);
+        assert!(instructions[0].accounts[0].is_signer);
+        assert!(instructions[0].accounts[0].is_writable);
+        assert_eq!(instructions[0].accounts[1].pubkey, recipient_ata);
+        assert!(instructions[0].accounts[1].is_writable);
+        assert_eq!(instructions[0].accounts[2].pubkey, recipient);
+        assert_eq!(instructions[0].accounts[3].pubkey, mint);
+        assert_eq!(instructions[0].accounts[5].pubkey, spl_token_2022_interface::id());
+        assert_eq!(instructions[1].program_id, spl_token_2022_interface::id());
+        assert_eq!(instructions[1].accounts[0].pubkey, sender_ata);
+        assert_eq!(instructions[1].accounts[1].pubkey, mint);
+        assert_eq!(instructions[1].accounts[2].pubkey, recipient_ata);
+        assert_eq!(instructions[1].accounts[3].pubkey, authority);
+    }
+
+    #[test]
+    fn rejects_unfunded_recipient_without_funding_option() {
+        let authority = new_pubkey(1);
+        let mint = new_pubkey(2);
+        let recipient = new_pubkey(3);
+        let (sender_ata, recipient_ata) = derive_send_token_associated_accounts(
+            &authority,
+            &mint,
+            &recipient,
+            &spl_token_interface::id(),
+        );
+
+        let err = build_send_token_instructions(
+            &authority,
+            &mint,
+            &recipient,
+            &spl_token_interface::id(),
+            &sender_ata,
+            &recipient_ata,
+            &[],
+            1,
+            18,
+            true,
+            false,
+        )
+        .unwrap_err();
+
+        assert!(err.message.contains("recipient is unfunded"));
+    }
+
+    #[test]
+    fn stores_send_token_outputs_in_signer_state() {
+        let construct_did = ConstructDid(Did::from_components(vec![b"send_token"]));
+        let signer_did = Did::from_components(vec![b"signer"]);
+        let mut signer_state = ValueStore::new("authority", &signer_did);
+        let authority = new_pubkey(1);
+        let mint = new_pubkey(2);
+        let recipient = new_pubkey(3);
+        let (sender_ata, recipient_ata) = derive_send_token_associated_accounts(
+            &authority,
+            &mint,
+            &recipient,
+            &spl_token_interface::id(),
+        );
+
+        insert_send_token_outputs(
+            &mut signer_state,
+            &construct_did,
+            &recipient_ata,
+            &recipient,
+            &sender_ata,
+            &authority,
+            &mint,
+            true,
+        );
+
+        let scope = construct_did.to_string();
+        assert_eq!(
+            SvmValue::to_pubkey(signer_state.get_scoped_value(&scope, RECIPIENT_ATA).unwrap())
+                .unwrap(),
+            recipient_ata
+        );
+        assert_eq!(
+            SvmValue::to_pubkey(signer_state.get_scoped_value(&scope, RECIPIENT_ADDRESS).unwrap())
+                .unwrap(),
+            recipient
+        );
+        assert_eq!(
+            SvmValue::to_pubkey(signer_state.get_scoped_value(&scope, SENDER_ATA).unwrap())
+                .unwrap(),
+            sender_ata
+        );
+        assert_eq!(
+            SvmValue::to_pubkey(signer_state.get_scoped_value(&scope, AUTHORITY_ADDRESS).unwrap())
+                .unwrap(),
+            authority
+        );
+        assert_eq!(
+            SvmValue::to_pubkey(signer_state.get_scoped_value(&scope, MINT_ADDRESS).unwrap())
+                .unwrap(),
+            mint
+        );
+        assert!(signer_state.get_scoped_value(&scope, IS_FUNDING_RECIPIENT).unwrap().expect_bool());
     }
 }
