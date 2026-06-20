@@ -299,7 +299,7 @@ lazy_static! {
                     typing: Type::addon(SVM_PUBKEY)
                 },
                 authority_address: {
-                    documentation: "The sender account address.",
+                    documentation: "The authority account address. If it was not provided as an input, this will be the same as the sender address.",
                     typing: Type::addon(SVM_PUBKEY)
                 },
                 sender_address: {
@@ -368,6 +368,7 @@ impl CommandImplementation for SendToken {
                 )
             })?;
 
+        // We assume mainnet for token symbol resolution, as it's the only network where we know the token symbols and addresses.
         let mint_address = match get_token_by_name("mainnet", mint_address_str) {
             Some(addr) => addr,
             _ => Pubkey::from_str(mint_address_str).map_err(|e| {
