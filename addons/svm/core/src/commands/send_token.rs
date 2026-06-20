@@ -68,7 +68,7 @@ lazy_static! {
                     sensitive: false
                 },
                 recipient: {
-                    documentation: "The SVM address of the recipient. The associated token account will be computed from this address and the token address.",
+                    documentation: "The SVM address of the recipient. The associated token account will be derived from this address and the token address.",
                     typing: Type::string(),
                     optional: false,
                     tainting: true,
@@ -84,7 +84,7 @@ lazy_static! {
                     sensitive: false
                 },
                 fund_recipient: {
-                    documentation: "If set to `true` and the recipient token account does not exist, the action will create the account and fund it, using the signer to fund the account. The default is `false`.",
+                    documentation: "If set to `true` and the recipient token account does not exist, the action will create the recipient associated token account using lamports from the authority (or the first signer). The default is `false`.",
                     typing: Type::bool(),
                     optional: true,
                     tainting: true,
@@ -148,15 +148,19 @@ lazy_static! {
                 recipient_address: {
                     documentation: "The recipient account address.",
                     typing: Type::addon(SVM_PUBKEY)
+                },
+                is_funding_recipient: {
+                    documentation: "Whether the transaction included a step to fund the recipient associated token account.",
+                    typing: Type::bool()
                 }
             ],
             example: txtx_addon_kit::indoc! {
-                r#"action "send_sol" "svm::send_token" {
-                    description = "Send some SOL"
-                    amount = svm::sol_to_lamports(1)
+                r#"action "send_usdc" "svm::send_token" {
+                    description = "Send 5 USDC"
+                    amount = 5000000
                     signers = [signer.caller]
                     recipient = "zbBjhHwuqyKMmz8ber5oUtJJ3ZV4B6ePmANfGyKzVGV"
-                    token = "3bv3j4GvMPjvvBX9QdoX27pVoWhDSXpwKZipFF1QiVr6"
+                    mint = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
                     fund_recipient = true
                 }"#
             },
