@@ -27,8 +27,8 @@ use txtx_addon_kit::uuid::Uuid;
 use crate::codec::send_transaction::send_transaction_background_task;
 use crate::constants::{
     AMOUNT, AUTHORITY, AUTHORITY_ADDRESS, CHECKED_PUBLIC_KEY, FUND_RECIPIENT, IS_FUNDING_RECIPIENT,
-    MINT, MINT_ADDRESS, RECIPIENT, RECIPIENT_ADDRESS, RECIPIENT_ATA, RPC_API_URL, SENDER_ATA,
-    TRANSACTION_BYTES,
+    MINT, MINT_ADDRESS, RECIPIENT, RECIPIENT_ADDRESS, RECIPIENT_ATA, RPC_API_URL, SENDER_ADDRESS,
+    SENDER_ATA, TOKEN, TRANSACTION_BYTES,
 };
 use crate::typing::{SvmValue, SVM_PUBKEY};
 
@@ -168,6 +168,11 @@ fn insert_send_token_outputs(
     );
     signer_state.insert_scoped_value(
         &construct_did.to_string(),
+        SENDER_ADDRESS,
+        SvmValue::pubkey(authority_pubkey.to_bytes().to_vec()),
+    );
+    signer_state.insert_scoped_value(
+        &construct_did.to_string(),
         MINT_ADDRESS,
         SvmValue::pubkey(mint_address.to_bytes().to_vec()),
     );
@@ -206,7 +211,15 @@ lazy_static! {
                 mint: {
                     documentation: "The program address for the token being sent. This is also known as the 'token mint account'. You may also provide the symbol of known mints such as 'usdc', 'wsol', or 'usdt'.",
                     typing: Type::string(),
-                    optional: false,
+                    optional: true,
+                    tainting: true,
+                    internal: false,
+                    sensitive: false
+                },
+                token: {
+                    documentation: "Alias for `mint`. Prefer `mint` for new runbooks.",
+                    typing: Type::string(),
+                    optional: true,
                     tainting: true,
                     internal: false,
                     sensitive: false
@@ -289,6 +302,10 @@ lazy_static! {
                     documentation: "The sender account address.",
                     typing: Type::addon(SVM_PUBKEY)
                 },
+                sender_address: {
+                    documentation: "The sender account address.",
+                    typing: Type::addon(SVM_PUBKEY)
+                },
                 recipient_address: {
                     documentation: "The recipient account address.",
                     typing: Type::addon(SVM_PUBKEY)
@@ -342,9 +359,14 @@ impl CommandImplementation for SendToken {
             .get_expected_uint(AMOUNT)
             .map_err(|e| (signers.clone(), signer_state.clone(), e))?;
 
-        let mint_address_str = args
-            .get_expected_string(MINT)
-            .map_err(|e| (signers.clone(), signer_state.clone(), e))?;
+        let mint_address_str =
+            args.get_string(MINT).or_else(|| args.get_string(TOKEN)).ok_or_else(|| {
+                (
+                    signers.clone(),
+                    signer_state.clone(),
+                    diagnosed_error!("missing required 'mint' input (or 'token' alias)"),
+                )
+            })?;
 
         let mint_address = match get_token_by_name("mainnet", mint_address_str) {
             Some(addr) => addr,
@@ -528,6 +550,8 @@ impl CommandImplementation for SendToken {
             let authority_address = signer_state
                 .get_scoped_value(&construct_did.to_string(), AUTHORITY_ADDRESS)
                 .unwrap();
+            let sender_address =
+                signer_state.get_scoped_value(&construct_did.to_string(), SENDER_ADDRESS).unwrap();
             let token_mint_address =
                 signer_state.get_scoped_value(&construct_did.to_string(), MINT_ADDRESS).unwrap();
             let is_funding_recipient = signer_state
@@ -540,6 +564,7 @@ impl CommandImplementation for SendToken {
 
             res_signing.outputs.insert(RECIPIENT_ADDRESS.into(), recipient_address.clone());
             res_signing.outputs.insert(AUTHORITY_ADDRESS.into(), authority_address.clone());
+            res_signing.outputs.insert(SENDER_ADDRESS.into(), sender_address.clone());
             res_signing.outputs.insert(MINT_ADDRESS.into(), token_mint_address.clone());
             res_signing.outputs.insert(IS_FUNDING_RECIPIENT.into(), is_funding_recipient.clone());
             res_signing.outputs.insert(RECIPIENT_ATA.into(), recipient_ata.clone());
@@ -567,8 +592,8 @@ impl CommandImplementation for SendToken {
             SvmValue::to_pubkey(outputs.get_expected_value(RECIPIENT_ADDRESS).unwrap()).unwrap();
         let sender_ata =
             SvmValue::to_pubkey(outputs.get_expected_value(SENDER_ATA).unwrap()).unwrap();
-        let authority_address =
-            SvmValue::to_pubkey(outputs.get_expected_value(AUTHORITY_ADDRESS).unwrap()).unwrap();
+        let sender_address =
+            SvmValue::to_pubkey(outputs.get_expected_value(SENDER_ADDRESS).unwrap()).unwrap();
         let mint_address =
             SvmValue::to_pubkey(outputs.get_expected_value(MINT_ADDRESS).unwrap()).unwrap();
         let is_funding_recipient = outputs.get_bool(IS_FUNDING_RECIPIENT).unwrap_or(false);
@@ -578,7 +603,7 @@ impl CommandImplementation for SendToken {
             "Token Transfer",
             format!(
                 "Authority {} generated sender associated token account {}",
-                authority_address, sender_ata
+                sender_address, sender_ata
             ),
         );
         logger.info(
@@ -593,7 +618,7 @@ impl CommandImplementation for SendToken {
                 "Token Transfer",
                 format!(
                     "Authority {} will fund recipient associated token account {}",
-                    authority_address, recipient_ata
+                    sender_address, recipient_ata
                 ),
             );
         }
@@ -654,23 +679,45 @@ mod tests {
         }
     }
 
+    fn send_token_output_names() -> Vec<String> {
+        match &*SEND_TOKEN {
+            PreCommandSpecification::Atomic(spec) => {
+                spec.outputs.iter().map(|output| output.name.clone()).collect()
+            }
+            PreCommandSpecification::Composite(_) => panic!("send_token should be atomic"),
+        }
+    }
+
     #[test]
     fn exposes_requested_command_inputs() {
         let input_names = send_token_input_names();
 
         assert!(input_names.contains(&AMOUNT.to_string()));
         assert!(input_names.contains(&MINT.to_string()));
+        assert!(input_names.contains(&TOKEN.to_string()));
         assert!(input_names.contains(&RECIPIENT.to_string()));
         assert!(input_names.contains(&AUTHORITY.to_string()));
         assert!(input_names.contains(&FUND_RECIPIENT.to_string()));
         assert!(input_names.contains(&SIGNERS.to_string()));
         assert!(input_names.contains(&RPC_API_URL.to_string()));
         assert!(!send_token_input_optional(AMOUNT));
-        assert!(!send_token_input_optional(MINT));
+        assert!(send_token_input_optional(MINT));
+        assert!(send_token_input_optional(TOKEN));
         assert!(!send_token_input_optional(RECIPIENT));
         assert!(!send_token_input_optional(SIGNERS));
         assert!(send_token_input_optional(AUTHORITY));
         assert!(send_token_input_optional(FUND_RECIPIENT));
+    }
+
+    #[test]
+    fn exposes_requested_command_outputs() {
+        let output_names = send_token_output_names();
+
+        assert!(output_names.contains(&RECIPIENT_ADDRESS.to_string()));
+        assert!(output_names.contains(&RECIPIENT_ATA.to_string()));
+        assert!(output_names.contains(&SENDER_ADDRESS.to_string()));
+        assert!(output_names.contains(&SENDER_ATA.to_string()));
+        assert!(output_names.contains(&MINT_ADDRESS.to_string()));
     }
 
     #[test]
@@ -894,6 +941,11 @@ mod tests {
         );
         assert_eq!(
             SvmValue::to_pubkey(signer_state.get_scoped_value(&scope, AUTHORITY_ADDRESS).unwrap())
+                .unwrap(),
+            authority
+        );
+        assert_eq!(
+            SvmValue::to_pubkey(signer_state.get_scoped_value(&scope, SENDER_ADDRESS).unwrap())
                 .unwrap(),
             authority
         );
