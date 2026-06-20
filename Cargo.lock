@@ -10482,7 +10482,7 @@ dependencies = [
 
 [[package]]
 name = "txtx-addon-kit"
-version = "0.4.14"
+version = "0.4.15"
 dependencies = [
  "bip32",
  "crossbeam-channel",
@@ -10588,7 +10588,7 @@ dependencies = [
 
 [[package]]
 name = "txtx-addon-network-svm-types"
-version = "0.3.19"
+version = "0.3.20"
 dependencies = [
  "anchor-lang-idl",
  "borsh",
@@ -10652,7 +10652,7 @@ dependencies = [
 
 [[package]]
 name = "txtx-core"
-version = "0.4.17"
+version = "0.4.18"
 dependencies = [
  "base64 0.22.1",
  "better-debug",
@@ -10682,7 +10682,7 @@ dependencies = [
 
 [[package]]
 name = "txtx-gql"
-version = "0.3.10"
+version = "0.3.11"
 dependencies = [
  "async-stream",
  "futures",
