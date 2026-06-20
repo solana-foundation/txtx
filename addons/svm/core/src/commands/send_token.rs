@@ -33,7 +33,7 @@ use crate::constants::{
 use crate::typing::{SvmValue, SVM_PUBKEY};
 
 use super::get_signers_did;
-use super::setup_surfnet::tokens::get_token_by_name;
+use super::setup_surfnet::tokens::get_mainnet_token_by_name;
 use super::sign_transaction::{check_signed_executability, run_signed_execution};
 
 fn derive_send_token_associated_accounts(
@@ -369,7 +369,7 @@ impl CommandImplementation for SendToken {
             })?;
 
         // We assume mainnet for token symbol resolution, as it's the only network where we know the token symbols and addresses.
-        let mint_address = match get_token_by_name("mainnet", mint_address_str) {
+        let mint_address = match get_mainnet_token_by_name(mint_address_str) {
             Some(addr) => addr,
             _ => Pubkey::from_str(mint_address_str).map_err(|e| {
                 (

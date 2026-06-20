@@ -40,3 +40,7 @@ pub fn get_token_by_name(network: &str, name: &str) -> Option<Pubkey> {
         _ => None,
     }
 }
+
+pub fn get_mainnet_token_by_name(name: &str) -> Option<Pubkey> {
+    get_token_by_name("mainnet", name)
+}
