@@ -420,7 +420,7 @@ impl CommandImplementation for SendToken {
             &token_program_id,
         );
 
-        let do_create_account = match client.get_account(&recipient_ata) {
+        let recipient_needs_funding = match client.get_account(&recipient_ata) {
             Ok(recipient_account) => recipient_account.lamports == 0,
             Err(e) => {
                 if e.to_string().contains("AccountNotFound") {
@@ -451,7 +451,7 @@ impl CommandImplementation for SendToken {
             &signer_pubkeys,
             amount,
             mint_decimals,
-            do_create_account,
+            recipient_needs_funding,
             args.get_bool(FUND_RECIPIENT).unwrap_or(false),
         )
         .map_err(|e| (signers.clone(), signer_state.clone(), e))?;
