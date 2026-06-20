@@ -79,8 +79,8 @@ pub const IS_WRITABLE: &str = "is_writable";
 pub const IS_SIGNER: &str = "is_signer";
 pub const REMAINING_ACCOUNT: &str = "remaining_account";
 pub const SKIP_PREFLIGHT: &str = "skip_preflight";
-pub const RECIPIENT_ATA:&str = "recipient_associated_token_address";
-pub const SENDER_ATA:&str = "sender_associated_token_address";
+pub const RECIPIENT_ATA: &str = "recipient_associated_token_address";
+pub const SENDER_ATA: &str = "sender_associated_token_address";
 
 // Subgraph keys
 pub const SLOT: &str = "slot";
