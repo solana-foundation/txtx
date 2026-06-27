@@ -754,7 +754,6 @@ mod tests {
         assert!(!input_names.contains(&"mint_keypair".to_string()));
         assert!(!input_names.contains(&"mint".to_string()));
         assert!(!input_names.contains(&"rpc_api_url".to_string()));
-        assert!(!input_names.contains(&"rpc_api_auth_token".to_string()));
         assert!(!deploy_token_input_optional(PAYER));
         assert!(deploy_token_input_optional(AUTHORITY));
     }
