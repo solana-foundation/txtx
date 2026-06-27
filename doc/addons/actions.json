@@ -662,11 +662,17 @@
           "optional": false
         },
         {
+          "name": "commitment_level",
+          "documentation": "The commitment level expected for considering this action as done ('processed', 'confirmed', 'finalized'). The default is 'confirmed'.",
+          "typing": "string",
+          "optional": true
+        },
+        {
           "name": "rpc_api_url",
           "documentation": "The URL to use when making API requests.",
           "typing": "string",
           "optional": false
-        }     
+        }
       ],
       "outputs": [
         {
@@ -791,6 +797,12 @@
           "optional": false
         },
         {
+          "name": "commitment_level",
+          "documentation": "The commitment level expected for considering this action as done ('processed', 'confirmed', 'finalized'). The default is 'confirmed'.",
+          "typing": "string",
+          "optional": true
+        },
+        {
           "name": "rpc_api_url",
           "documentation": "The URL to use when making API requests.",
           "typing": "string",
@@ -852,6 +864,12 @@
           "documentation": "A set of references to signer constructs, which will be used to sign the transaction.",
           "typing": "array[string]",
           "optional": false
+        },
+        {
+          "name": "commitment_level",
+          "documentation": "The commitment level expected for considering this action as done ('processed', 'confirmed', 'finalized'). The default is 'confirmed'.",
+          "typing": "string",
+          "optional": true
         },
         {
           "name": "rpc_api_url",

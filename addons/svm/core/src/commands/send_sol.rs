@@ -71,6 +71,14 @@ lazy_static! {
                     internal: false,
                     sensitive: false
                 },
+                commitment_level: {
+                    documentation: "The commitment level expected for considering this action as done ('processed', 'confirmed', 'finalized'). The default is 'confirmed'.",
+                    typing: Type::string(),
+                    optional: true,
+                    tainting: false,
+                    internal: false,
+                    sensitive: false
+                },
                 rpc_api_url: {
                     documentation: "The URL to use when making API requests.",
                     typing: Type::string(),
@@ -78,7 +86,7 @@ lazy_static! {
                     tainting: false,
                     internal: false,
                     sensitive: false
-                }          
+                }
             ],
             outputs: [
                 signature: {

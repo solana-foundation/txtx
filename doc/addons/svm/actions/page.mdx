@@ -36,6 +36,11 @@ The `svm::process_instructions` action encodes instructions, adds them to a tran
   </Property>
 
 
+  <Property name="commitment_level" required="optional" type="string">
+    The commitment level expected for considering this action as done ('processed', 'confirmed', 'finalized'). The default is 'confirmed'.
+  </Property>
+
+
   <Property name="rpc_api_url" required="required" type="string">
     The URL to use when making API requests.
   </Property>
@@ -301,6 +306,11 @@ The `svm::send_sol` action encodes a transaction which sends SOL, signs it, and 
   </Property>
 
 
+  <Property name="commitment_level" required="optional" type="string">
+    The commitment level expected for considering this action as done ('processed', 'confirmed', 'finalized'). The default is 'confirmed'.
+  </Property>
+
+
   <Property name="rpc_api_url" required="required" type="string">
     The URL to use when making API requests.
   </Property>
@@ -422,6 +432,11 @@ The `svm::send_token` action encodes a transaction which sends the specified tok
 
   <Property name="signers" required="required" type="array[string]">
     A set of references to signer constructs, which will be used to sign the transaction.
+  </Property>
+
+
+  <Property name="commitment_level" required="optional" type="string">
+    The commitment level expected for considering this action as done ('processed', 'confirmed', 'finalized'). The default is 'confirmed'.
   </Property>
 
 
@@ -1178,4 +1193,3 @@ action "my_record" "svm::create_record" {
 </CodeGroup>
 
 ---
-
