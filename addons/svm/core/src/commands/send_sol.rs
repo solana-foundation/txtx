@@ -86,14 +86,6 @@ lazy_static! {
                     tainting: false,
                     internal: false,
                     sensitive: false
-                },
-                rpc_api_auth_token: {
-                    documentation: "The HTTP authentication token to include in the headers when making API requests.",
-                    typing: Type::string(),
-                    optional: true,
-                    tainting: false,
-                    internal: false,
-                    sensitive: true
                 }
             ],
             outputs: [
