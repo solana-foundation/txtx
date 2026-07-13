@@ -3,7 +3,7 @@ use std::sync::Arc;
 use solana_client::rpc_client::RpcClient;
 use solana_client::rpc_config::RpcSendTransactionConfig;
 use solana_commitment_config::{CommitmentConfig, CommitmentLevel};
-use solana_transaction::Transaction;
+use solana_transaction_rpc::Transaction;
 use txtx_addon_kit::channel;
 use txtx_addon_kit::constants::SIGNED_TRANSACTION_BYTES;
 use txtx_addon_kit::types::commands::CommandExecutionResult;
@@ -101,9 +101,7 @@ pub fn send_transaction(
     transaction_bytes: &Vec<u8>,
     commitment: CommitmentLevel,
 ) -> Result<String, Diagnostic> {
-    let transaction: Transaction = serde_json::from_slice(&transaction_bytes).map_err(|e| {
-        diagnosed_error!("unable to deserialize transaction from bytes ({})", e.to_string())
-    })?;
+    let transaction = deserialize_transaction(transaction_bytes)?;
 
     let signature = if do_await_confirmation {
         rpc_client.send_and_confirm_transaction(&transaction).map_err(|e| {
@@ -125,4 +123,42 @@ pub fn send_transaction(
     };
 
     Ok(signature.to_string())
+}
+
+fn deserialize_transaction(transaction_bytes: &[u8]) -> Result<Transaction, Diagnostic> {
+    serde_json::from_slice(transaction_bytes).map_err(|e| {
+        diagnosed_error!("unable to deserialize transaction from bytes ({})", e.to_string())
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use solana_hash::Hash;
+    use solana_keypair::Keypair;
+    use solana_message::Message;
+    use solana_pubkey::Pubkey;
+    use solana_signer::Signer;
+    use solana_system_interface::instruction::transfer;
+    use solana_transaction::Transaction as LegacyTransaction;
+
+    use super::deserialize_transaction;
+
+    #[test]
+    fn deserializes_legacy_transaction_for_current_rpc_client() {
+        let payer = Keypair::new();
+        let recipient = Pubkey::new_from_array([1; 32]);
+        let message =
+            Message::new(&[transfer(&payer.pubkey(), &recipient, 1)], Some(&payer.pubkey()));
+        let legacy_transaction =
+            LegacyTransaction::new(&[&payer], message, Hash::new_from_array([2; 32]));
+        assert!(legacy_transaction.signatures[0].as_ref().iter().any(|byte| *byte != 0));
+        let transaction_bytes = serde_json::to_vec(&legacy_transaction).unwrap();
+
+        let transaction = deserialize_transaction(&transaction_bytes).unwrap();
+
+        assert_eq!(
+            serde_json::to_value(transaction).unwrap(),
+            serde_json::to_value(legacy_transaction).unwrap()
+        );
+    }
 }
