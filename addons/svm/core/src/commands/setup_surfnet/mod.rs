@@ -6,7 +6,7 @@ mod set_program_authority;
 mod set_token_account;
 mod stream_account;
 pub(crate) mod surfnet_update;
-mod tokens;
+pub mod tokens;
 
 use surfnet_update::SurfnetAccountUpdate;
 
