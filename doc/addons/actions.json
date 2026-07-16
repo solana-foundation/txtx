@@ -672,12 +672,6 @@
           "documentation": "The URL to use when making API requests.",
           "typing": "string",
           "optional": false
-        },
-        {
-          "name": "rpc_api_auth_token",
-          "documentation": "The HTTP authentication token to include in the headers when making API requests.",
-          "typing": "string",
-          "optional": true
         }
       ],
       "outputs": [
@@ -813,12 +807,6 @@
           "documentation": "The URL to use when making API requests.",
           "typing": "string",
           "optional": false
-        },
-        {
-          "name": "rpc_api_auth_token",
-          "documentation": "The HTTP authentication token to include in the headers when making API requests.",
-          "typing": "string",
-          "optional": true
         }
       ],
       "outputs": [
@@ -888,12 +876,6 @@
           "documentation": "The URL to use when making API requests.",
           "typing": "string",
           "optional": false
-        },
-        {
-          "name": "rpc_api_auth_token",
-          "documentation": "The HTTP authentication token to include in the headers when making API requests.",
-          "typing": "string",
-          "optional": true
         }
       ],
       "outputs": [
@@ -1092,12 +1074,6 @@
           "documentation": "The URL to use when making API requests.",
           "typing": "string",
           "optional": false
-        },
-        {
-          "name": "rpc_api_auth_token",
-          "documentation": "The HTTP authentication token to include in the headers when making API requests.",
-          "typing": "string",
-          "optional": true
         }
       ],
       "outputs": [
@@ -1182,12 +1158,6 @@
           "documentation": "The URL to use when making API requests.",
           "typing": "string",
           "optional": false
-        },
-        {
-          "name": "rpc_api_auth_token",
-          "documentation": "The HTTP authentication token to include in the headers when making API requests.",
-          "typing": "string",
-          "optional": true
         }
       ],
       "outputs": [

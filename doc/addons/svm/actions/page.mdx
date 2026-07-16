@@ -46,11 +46,6 @@ The `svm::process_instructions` action encodes instructions, adds them to a tran
   </Property>
 
 
-  <Property name="rpc_api_auth_token" required="optional" type="string">
-    The HTTP authentication token to include in the headers when making API requests.
-  </Property>
-
-
   <Property name="pre_condition" required="optional" type="map">
     Pre-conditions are assertions that are evaluated before a command is executed. They can be used to determine if the command should be executed or if a specific behavior should be executed based on the result of the assertion. This is a map type containing the keys:
   - **behavior**: The behavior if the pre-condition assertion does not pass. Possible values are:
@@ -321,11 +316,6 @@ The `svm::send_sol` action encodes a transaction which sends SOL, signs it, and 
   </Property>
 
 
-  <Property name="rpc_api_auth_token" required="optional" type="string">
-    The HTTP authentication token to include in the headers when making API requests.
-  </Property>
-
-
   <Property name="pre_condition" required="optional" type="map">
     Pre-conditions are assertions that are evaluated before a command is executed. They can be used to determine if the command should be executed or if a specific behavior should be executed based on the result of the assertion. This is a map type containing the keys:
   - **behavior**: The behavior if the pre-condition assertion does not pass. Possible values are:
@@ -452,11 +442,6 @@ The `svm::send_token` action encodes a transaction which sends the specified tok
 
   <Property name="rpc_api_url" required="required" type="string">
     The URL to use when making API requests.
-  </Property>
-
-
-  <Property name="rpc_api_auth_token" required="optional" type="string">
-    The HTTP authentication token to include in the headers when making API requests.
   </Property>
 
 
@@ -968,11 +953,6 @@ The `svm::create_class` action is coming soon.
   </Property>
 
 
-  <Property name="rpc_api_auth_token" required="optional" type="string">
-    The HTTP authentication token to include in the headers when making API requests.
-  </Property>
-
-
   <Property name="pre_condition" required="optional" type="map">
     Pre-conditions are assertions that are evaluated before a command is executed. They can be used to determine if the command should be executed or if a specific behavior should be executed based on the result of the assertion. This is a map type containing the keys:
   - **behavior**: The behavior if the pre-condition assertion does not pass. Possible values are:
@@ -1119,11 +1099,6 @@ The `svm::create_record` action is coming soon.
   </Property>
 
 
-  <Property name="rpc_api_auth_token" required="optional" type="string">
-    The HTTP authentication token to include in the headers when making API requests.
-  </Property>
-
-
   <Property name="pre_condition" required="optional" type="map">
     Pre-conditions are assertions that are evaluated before a command is executed. They can be used to determine if the command should be executed or if a specific behavior should be executed based on the result of the assertion. This is a map type containing the keys:
   - **behavior**: The behavior if the pre-condition assertion does not pass. Possible values are:
@@ -1218,4 +1193,3 @@ action "my_record" "svm::create_record" {
 </CodeGroup>
 
 ---
-

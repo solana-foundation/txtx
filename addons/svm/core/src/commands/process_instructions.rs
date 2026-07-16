@@ -78,14 +78,6 @@ lazy_static! {
                         internal: false,
                         sensitive: false
                     },
-                    rpc_api_auth_token: {
-                        documentation: "The HTTP authentication token to include in the headers when making API requests.",
-                        typing: Type::string(),
-                        optional: true,
-                        tainting: false,
-                        internal: false,
-                        sensitive: true
-                    },
                     skip_preflight: {
                         documentation: "Whether to skip preflight checks. The default is `false`.",
                         typing: Type::bool(),
