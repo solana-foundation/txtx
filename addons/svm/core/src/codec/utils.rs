@@ -41,6 +41,11 @@ pub fn get_seeds_from_value(value: &Value) -> Result<Vec<Vec<u8>>, Diagnostic> {
 /// chunk is ~2 MiB on the wire — under the 5 MiB body cap of surfpool < 1.1.2.
 const WRITE_PROGRAM_CHUNK_SIZE: usize = 1024 * 1024;
 
+/// A chunk that fails mid-sequence leaves the program part-old, part-new, so
+/// transient transport errors are worth a few attempts before giving up.
+const WRITE_PROGRAM_ATTEMPTS: usize = 3;
+const WRITE_PROGRAM_RETRY_DELAY: Duration = Duration::from_millis(200);
+
 pub async fn cheatcode_deploy_program(
     rpc_client: &RpcClient,
     program_id: Pubkey,
@@ -63,16 +68,43 @@ pub async fn cheatcode_deploy_program(
             );
         }
 
-        rpc_client
-            .send::<serde_json::Value>(
-                solana_client::rpc_request::RpcRequest::Custom { method: "surfnet_writeProgram" },
-                write_program_params(&program_id, chunk, offset, upgrade_authority.as_ref()),
-            )
-            .await
-            .map_err(|e| write_program_error(&e, &program_id, offset, chunk.len()))?;
+        let params = write_program_params(&program_id, chunk, offset, upgrade_authority.as_ref());
+        let mut attempt = 1;
+        loop {
+            let result = rpc_client
+                .send::<serde_json::Value>(
+                    solana_client::rpc_request::RpcRequest::Custom {
+                        method: "surfnet_writeProgram",
+                    },
+                    params.clone(),
+                )
+                .await;
+            match result {
+                Ok(_) => break,
+                Err(e) if is_transient_client_error(&e) && attempt < WRITE_PROGRAM_ATTEMPTS => {
+                    attempt += 1;
+                    tokio::time::sleep(WRITE_PROGRAM_RETRY_DELAY).await;
+                }
+                Err(e) => {
+                    return Err(write_program_error(
+                        &e,
+                        &program_id,
+                        offset,
+                        chunk.len(),
+                        total > 1,
+                    ));
+                }
+            }
+        }
     }
 
     Ok(())
+}
+
+/// Io/transport failures may be momentary; JSON-RPC error responses are
+/// deterministic, so retrying those only repeats the failure.
+fn is_transient_client_error(e: &ClientError) -> bool {
+    matches!(e.kind(), ClientErrorKind::Io(_) | ClientErrorKind::Reqwest(_))
 }
 
 /// (offset, chunk) pairs in ascending offset order.
@@ -105,6 +137,7 @@ fn write_program_error(
     program_id: &Pubkey,
     offset: usize,
     len: usize,
+    multi_chunk: bool,
 ) -> Diagnostic {
     if matches!(
         e.kind(),
@@ -114,8 +147,15 @@ fn write_program_error(
             "`surfnet_writeProgram` is not available on this surfnet; upgrade surfpool to v0.12.0 or later to use instant deployments"
         );
     }
+    // A multi-chunk sequence that dies partway leaves the program part-old,
+    // part-new; re-running the deployment rewrites every chunk.
+    let recovery = if multi_chunk {
+        "; the program may be partially written — re-run the deployment to rewrite it in full"
+    } else {
+        ""
+    };
     diagnosed_error!(
-        "`surfnet_writeProgram` RPC call failed writing {len} bytes at offset {offset} of program {program_id}: {e}"
+        "`surfnet_writeProgram` RPC call failed writing {len} bytes at offset {offset} of program {program_id}: {e}{recovery}"
     )
 }
 
@@ -211,6 +251,22 @@ mod tests {
     #[test]
     fn test_write_program_chunk_fits_legacy_body_limit() {
         assert!(WRITE_PROGRAM_CHUNK_SIZE * 2 + 1024 < 5 * 1024 * 1024);
+    }
+
+    #[test]
+    fn test_transient_error_classification() {
+        let io_error: ClientError =
+            ClientErrorKind::Io(std::io::Error::new(std::io::ErrorKind::ConnectionReset, "reset"))
+                .into();
+        assert!(is_transient_client_error(&io_error));
+
+        let rpc_error: ClientError = ClientErrorKind::RpcError(RpcError::RpcResponseError {
+            code: -32602,
+            message: "invalid params".to_string(),
+            data: solana_client::rpc_request::RpcResponseErrorData::Empty,
+        })
+        .into();
+        assert!(!is_transient_client_error(&rpc_error));
     }
 
     #[test]
