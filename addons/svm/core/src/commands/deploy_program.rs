@@ -623,7 +623,7 @@ impl CommandImplementation for DeployProgram {
             .to_request(instance_name, ACTION_ITEM_PROVIDE_SIGNED_TRANSACTION)
             .with_construct_did(&nested_construct_did)
             .with_some_description(description)
-            .with_meta_description("The `surfnet_setAccount` cheatcode will be used to instantly deploy the program without sending any transactions.");
+            .with_meta_description("The `surfnet_writeProgram` cheatcode will be used to instantly deploy the program without sending any transactions.");
 
             let actions = Actions::append_item(
                 request,
@@ -881,13 +881,14 @@ impl CommandImplementation for DeployProgram {
                 | DeploymentTransactionType::CheatcodeUpgrade => {
                     let (upgrade_authority, data) =
                         deployment_transaction.cheatcode_data.as_ref().unwrap();
+                    let rpc_client =
+                        solana_client::nonblocking::rpc_client::RpcClient::new(rpc_api_url.clone());
                     cheatcode_deploy_program(
-                        &solana_client::nonblocking::rpc_client::RpcClient::new(
-                            rpc_api_url.clone(),
-                        ),
+                        &rpc_client,
                         program_id,
                         data,
                         Some(*upgrade_authority),
+                        &logger,
                     )
                     .await
                     .map_err(|e| diagnosed_error!("failed to deploy program: {}", e))?;
