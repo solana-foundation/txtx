@@ -1,15 +1,13 @@
 use std::{str::FromStr, thread::sleep, time::Duration};
 
+use solana_client::client_error::{ClientError, ClientErrorKind};
 use solana_client::nonblocking::rpc_client::RpcClient;
+use solana_client::rpc_request::RpcError;
 use solana_clock::DEFAULT_MS_PER_SLOT;
-use solana_loader_v3_interface::{get_program_data_address, state::UpgradeableLoaderState};
 use solana_pubkey::Pubkey;
 
-use txtx_addon_kit::types::{diagnostics::Diagnostic, types::Value};
+use txtx_addon_kit::types::{diagnostics::Diagnostic, frontend::LogDispatcher, types::Value};
 use txtx_addon_network_svm_types::anchor::types::Idl;
-
-use crate::commands::setup_surfnet::set_account::SurfpoolAccountUpdate;
-use crate::commands::setup_surfnet::surfnet_update::SurfnetAccountUpdate;
 
 pub fn get_seeds_from_value(value: &Value) -> Result<Vec<Vec<u8>>, Diagnostic> {
     let seeds = value
@@ -39,64 +37,126 @@ pub fn get_seeds_from_value(value: &Value) -> Result<Vec<Vec<u8>>, Diagnostic> {
     Ok(seeds)
 }
 
+/// Raw bytes per `surfnet_writeProgram` call. Hex doubles the payload, so a 1 MiB
+/// chunk is ~2 MiB on the wire — under the 5 MiB body cap of surfpool < 1.1.2.
+const WRITE_PROGRAM_CHUNK_SIZE: usize = 1024 * 1024;
+
+/// A chunk that fails mid-sequence leaves the program part-old, part-new, so
+/// transient transport errors are worth a few attempts before giving up.
+const WRITE_PROGRAM_ATTEMPTS: usize = 3;
+const WRITE_PROGRAM_RETRY_DELAY: Duration = Duration::from_millis(200);
+
 pub async fn cheatcode_deploy_program(
     rpc_client: &RpcClient,
     program_id: Pubkey,
-    data: &Vec<u8>,
+    data: &[u8],
     upgrade_authority: Option<Pubkey>,
+    logger: &LogDispatcher,
 ) -> Result<(), Diagnostic> {
-    let program_data_address = get_program_data_address(&program_id);
-    let rent_lamports = rpc_client
-        .get_minimum_balance_for_rent_exemption(data.len())
-        .await
-        .map_err(|e| diagnosed_error!("failed to get rent exemption: {e}"))?;
+    if data.is_empty() {
+        return Err(diagnosed_error!("program binary is empty"));
+    }
 
-    let slot = rpc_client
-        .get_slot()
-        .await
-        .map_err(|e| diagnosed_error!("failed to get current slot: {e}"))?;
+    let total = data.len().div_ceil(WRITE_PROGRAM_CHUNK_SIZE);
+    // The server performs a read-modify-write on the program account for every call,
+    // so chunks must land in order and one at a time or they'll clobber each other.
+    for (i, (offset, chunk)) in write_program_chunks(data).enumerate() {
+        if total > 1 {
+            logger.pending_info(
+                "Pending",
+                format!("Writing chunk {}/{} of program {}", i + 1, total, program_id),
+            );
+        }
 
-    let mut program_data = bincode::serialize(&UpgradeableLoaderState::ProgramData {
-        slot,
-        // LiteSVM rejects setting a program account without an upgrade authority for some reason,
-        // so we set one to the default Pubkey if none is provided.
-        upgrade_authority_address: Some(upgrade_authority.unwrap_or_default()),
-    })
-    .map_err(|e| diagnosed_error!("failed to serialize program data state: {e}"))?;
-    program_data.extend(data);
-
-    let program_data_address_payload = SurfpoolAccountUpdate {
-        public_key: program_data_address,
-        lamports: Some(rent_lamports),
-        data: Some(txtx_addon_kit::hex::encode(program_data)),
-        owner: Some(solana_sdk_ids::bpf_loader_upgradeable::id().to_string()),
-        executable: Some(false),
-        rent_epoch: Some(0),
-    };
-
-    let program_data = bincode::serialize(&UpgradeableLoaderState::Program {
-        programdata_address: program_data_address,
-    })
-    .map_err(|e| diagnosed_error!("failed to serialize program state: {e}"))?;
-
-    let rent_lamports = rpc_client
-        .get_minimum_balance_for_rent_exemption(program_data.len())
-        .await
-        .map_err(|e| diagnosed_error!("failed to get rent exemption: {e}"))?;
-    let program_payload = SurfpoolAccountUpdate {
-        public_key: program_id,
-        lamports: Some(rent_lamports),
-        data: Some(txtx_addon_kit::hex::encode(&program_data)),
-        owner: Some(solana_sdk_ids::bpf_loader_upgradeable::id().to_string()),
-        executable: Some(true),
-        rent_epoch: Some(0),
-    };
-
-    program_data_address_payload.send_request(&rpc_client).await?;
-
-    program_payload.send_request(&rpc_client).await?;
+        let params = write_program_params(&program_id, chunk, offset, upgrade_authority.as_ref());
+        let mut attempt = 1;
+        loop {
+            let result = rpc_client
+                .send::<serde_json::Value>(
+                    solana_client::rpc_request::RpcRequest::Custom {
+                        method: "surfnet_writeProgram",
+                    },
+                    params.clone(),
+                )
+                .await;
+            match result {
+                Ok(_) => break,
+                Err(e) if is_transient_client_error(&e) && attempt < WRITE_PROGRAM_ATTEMPTS => {
+                    attempt += 1;
+                    tokio::time::sleep(WRITE_PROGRAM_RETRY_DELAY).await;
+                }
+                Err(e) => {
+                    return Err(write_program_error(
+                        &e,
+                        &program_id,
+                        offset,
+                        chunk.len(),
+                        total > 1,
+                    ));
+                }
+            }
+        }
+    }
 
     Ok(())
+}
+
+/// Io/transport failures may be momentary; JSON-RPC error responses are
+/// deterministic, so retrying those only repeats the failure.
+fn is_transient_client_error(e: &ClientError) -> bool {
+    matches!(e.kind(), ClientErrorKind::Io(_) | ClientErrorKind::Reqwest(_))
+}
+
+/// (offset, chunk) pairs in ascending offset order.
+fn write_program_chunks(data: &[u8]) -> impl Iterator<Item = (usize, &[u8])> {
+    data.chunks(WRITE_PROGRAM_CHUNK_SIZE)
+        .enumerate()
+        .map(|(i, chunk)| (i * WRITE_PROGRAM_CHUNK_SIZE, chunk))
+}
+
+fn write_program_params(
+    program_id: &Pubkey,
+    chunk: &[u8],
+    offset: usize,
+    authority: Option<&Pubkey>,
+) -> serde_json::Value {
+    let mut params = vec![
+        serde_json::Value::String(program_id.to_string()),
+        serde_json::Value::String(txtx_addon_kit::hex::encode(chunk)),
+        serde_json::Value::from(offset),
+    ];
+    // jsonrpc-derive pads missing trailing params, so omit rather than send null.
+    if let Some(authority) = authority {
+        params.push(serde_json::Value::String(authority.to_string()));
+    }
+    serde_json::Value::Array(params)
+}
+
+fn write_program_error(
+    e: &ClientError,
+    program_id: &Pubkey,
+    offset: usize,
+    len: usize,
+    multi_chunk: bool,
+) -> Diagnostic {
+    if matches!(
+        e.kind(),
+        ClientErrorKind::RpcError(RpcError::RpcResponseError { code: -32601, .. })
+    ) {
+        return diagnosed_error!(
+            "`surfnet_writeProgram` is not available on this surfnet; upgrade surfpool to v0.12.0 or later to use instant deployments"
+        );
+    }
+    // A multi-chunk sequence that dies partway leaves the program part-old,
+    // part-new; re-running the deployment rewrites every chunk.
+    let recovery = if multi_chunk {
+        "; the program may be partially written — re-run the deployment to rewrite it in full"
+    } else {
+        ""
+    };
+    diagnosed_error!(
+        "`surfnet_writeProgram` RPC call failed writing {len} bytes at offset {offset} of program {program_id}: {e}{recovery}"
+    )
 }
 
 pub fn cheatcode_register_idl(
@@ -152,5 +212,80 @@ pub fn wait_n_slots(rpc_client: &solana_client::rpc_client::RpcClient, n: u64) -
         if new_slot.saturating_sub(slot) >= n {
             return new_slot;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use solana_pubkey::pubkey;
+
+    use super::*;
+
+    #[test]
+    fn test_write_program_chunks_cover_binary() {
+        let lengths = [
+            1,
+            WRITE_PROGRAM_CHUNK_SIZE - 1,
+            WRITE_PROGRAM_CHUNK_SIZE,
+            WRITE_PROGRAM_CHUNK_SIZE + 1,
+            3 * WRITE_PROGRAM_CHUNK_SIZE + 7,
+        ];
+
+        for len in lengths {
+            let data: Vec<u8> = (0..len).map(|i| (i % 256) as u8).collect();
+            let chunks: Vec<(usize, &[u8])> = write_program_chunks(&data).collect();
+
+            let mut expected_offset = 0;
+            let mut reassembled = Vec::with_capacity(len);
+            for (offset, chunk) in &chunks {
+                assert_eq!(*offset, expected_offset);
+                assert!(!chunk.is_empty());
+                assert!(chunk.len() <= WRITE_PROGRAM_CHUNK_SIZE);
+                reassembled.extend_from_slice(chunk);
+                expected_offset += chunk.len();
+            }
+            assert_eq!(reassembled, data);
+        }
+    }
+
+    #[test]
+    fn test_write_program_chunk_fits_legacy_body_limit() {
+        assert!(WRITE_PROGRAM_CHUNK_SIZE * 2 + 1024 < 5 * 1024 * 1024);
+    }
+
+    #[test]
+    fn test_transient_error_classification() {
+        let io_error: ClientError =
+            ClientErrorKind::Io(std::io::Error::new(std::io::ErrorKind::ConnectionReset, "reset"))
+                .into();
+        assert!(is_transient_client_error(&io_error));
+
+        let rpc_error: ClientError = ClientErrorKind::RpcError(RpcError::RpcResponseError {
+            code: -32602,
+            message: "invalid params".to_string(),
+            data: solana_client::rpc_request::RpcResponseErrorData::Empty,
+        })
+        .into();
+        assert!(!is_transient_client_error(&rpc_error));
+    }
+
+    #[test]
+    fn test_write_program_params_shape() {
+        const PROGRAM_ID: Pubkey = pubkey!("11111111111111111111111111111111");
+        const AUTHORITY: Pubkey = pubkey!("EnZsyjncjMShCUEPhz4rKnjKQ6gbPF4dkbUANZ2ngPo4");
+        let chunk = vec![1u8, 2, 3, 4];
+
+        let params = write_program_params(&PROGRAM_ID, &chunk, 128, None);
+        let array = params.as_array().unwrap();
+        assert_eq!(array.len(), 3);
+        assert_eq!(array[0], PROGRAM_ID.to_string());
+        assert_eq!(array[1].as_str().unwrap(), "01020304");
+        assert_eq!(array[1].as_str().unwrap().len(), chunk.len() * 2);
+        assert_eq!(array[2], 128);
+
+        let params = write_program_params(&PROGRAM_ID, &chunk, 128, Some(&AUTHORITY));
+        let array = params.as_array().unwrap();
+        assert_eq!(array.len(), 4);
+        assert_eq!(array[3], AUTHORITY.to_string());
     }
 }

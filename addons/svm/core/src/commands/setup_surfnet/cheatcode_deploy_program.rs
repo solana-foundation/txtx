@@ -168,6 +168,7 @@ impl SurfpoolDeployProgram {
                 program_deployment.program_id,
                 &program_deployment.binary,
                 program_deployment.authority,
+                logger,
             )
             .await?;
             if let Some(idl) = &program_deployment.idl {
