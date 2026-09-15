@@ -1013,6 +1013,21 @@ lazy_static! {
             tainting: false
         }
     };
+
+    pub static ref BLOCK_ACCOUNT_DOWNLOAD_MAP: Type = define_strict_map_type! {
+        public_key: {
+            documentation: "The public key of the account to block from being downloaded from mainnet.",
+            typing: Type::addon(SVM_PUBKEY),
+            optional: false,
+            tainting: true
+        },
+        include_owned_accounts: {
+            documentation: "Whether to recursively block all accounts owned by this account. Default is false.",
+            typing: Type::bool(),
+            optional: true,
+            tainting: false
+        }
+    };
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]

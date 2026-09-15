@@ -125,6 +125,14 @@ lazy_static! {
                         internal: false,
                         sensitive: false
                     },
+                    block_account_download: {
+                        documentation: "If set to `true`, the deployed program and its owned accounts will be blocked from being downloaded from mainnet when deploying to a Surfnet. Defaults to `true`.",
+                        typing: Type::bool(),
+                        optional: true,
+                        tainting: false,
+                        internal: false,
+                        sensitive: false
+                    },
                     ephemeral_authority_secret_key: {
                         documentation: "An optional base-58 encoded keypair string to use as the temporary upgrade authority during deployment. If not provided, a new ephemeral keypair will be generated.",
                         typing: Type::addon(SVM_KEYPAIR),
@@ -944,7 +952,7 @@ impl CommandImplementation for DeployProgram {
             deployment_transaction.post_send_actions(&rpc_api_url);
 
             if transaction_index == transaction_count - 1 {
-                let rpc_client = RpcClient::new(rpc_api_url);
+                let rpc_client = RpcClient::new(rpc_api_url.clone());
                 if let Ok(slot) = rpc_client.get_slot() {
                     result.insert(SLOT, Value::integer(slot as i128));
                 };
@@ -956,6 +964,10 @@ impl CommandImplementation for DeployProgram {
                     .unwrap();
 
                 if is_surfnet {
+                    let rpc_client_async = solana_client::nonblocking::rpc_client::RpcClient::new(
+                        rpc_api_url.clone(),
+                    );
+
                     if let Some(idl) = inputs
                         .get_scoped_value(&nested_construct_did.to_string(), PROGRAM_IDL)
                         .and_then(|v| v.as_string())
@@ -967,6 +979,34 @@ impl CommandImplementation for DeployProgram {
                                 })?;
                         }
                     };
+
+                    // Auto-block the deployed program from being downloaded from mainnet
+                    let should_block = inputs
+                        .get_scoped_value(&nested_construct_did.to_string(), "block_account_download")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(true); // Default to true
+
+                    if should_block {
+                        let block_params = serde_json::json!([{
+                            "pubkey": program_id.to_string(),
+                            "includeOwnedAccounts": true,
+                        }]);
+
+                        crate::codec::utils::send_rpc_request_async(
+                            &rpc_client_async,
+                            "surfnet_blockAccountDownload",
+                            block_params,
+                        )
+                        .await
+                        .map_err(|e| {
+                            diagnosed_error!("failed to block account download: {}", e)
+                        })?;
+
+                        logger.success_info(
+                            "Blocked Account Download",
+                            format!("Program {} and its owned accounts are now blocked from mainnet download", program_id),
+                        );
+                    }
                 }
             }
 
