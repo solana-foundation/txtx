@@ -2,10 +2,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_pubkey::Pubkey;
-use std::str::FromStr;
 use txtx_addon_kit::types::{
     diagnostics::Diagnostic, frontend::LogDispatcher, stores::ValueStore,
 };
+use txtx_addon_network_svm_types::SvmValue;
 
 use super::surfnet_update::SurfnetAccountUpdate;
 use crate::constants::BLOCK_ACCOUNT_DOWNLOAD;
@@ -37,14 +37,13 @@ impl SurfpoolBlockAccountDownload {
                     )
                 })?;
 
-                let public_key_str = entry_map
+                let public_key_value = entry_map
                     .get("public_key")
                     .ok_or_else(|| {
                         diagnosed_error!("'public_key' is required in block_account_download")
-                    })?
-                    .to_string();
+                    })?;
 
-                let public_key = Pubkey::from_str(&public_key_str).map_err(|e| {
+                let public_key = SvmValue::to_pubkey(public_key_value).map_err(|e| {
                     diagnosed_error!("invalid public key in block_account_download: {e}")
                 })?;
 
