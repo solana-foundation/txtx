@@ -979,20 +979,24 @@ impl CommandImplementation for DeployProgram {
                         rpc_api_url.clone(),
                     );
 
+                    // Try to register IDL if present, but don't let IDL failure block account blocking
                     if let Some(idl) = inputs
                         .get_scoped_value(&nested_construct_did.to_string(), PROGRAM_IDL)
                         .and_then(|v| v.as_string())
                     {
                         if let Ok(idl_ref) = IdlRef::from_str(idl) {
-                            let _ =
-                                cheatcode_register_idl(&rpc_client, &idl_ref.idl).map_err(|e| {
-                                    diagnosed_error!("failed to register program IDL: {}", e)
-                                })?;
+                            // Log IDL registration errors but don't fail the deployment
+                            if let Err(e) = cheatcode_register_idl(&rpc_client, &idl_ref.idl) {
+                                logger.warn(
+                                    "IDL Registration Failed",
+                                    format!("Failed to register program IDL: {}", e),
+                                );
+                            }
                         }
-                    };
+                    }
 
                     // Auto-block the deployed program from being downloaded from mainnet
-                    // This runs AFTER successful deployment and IDL registration
+                    // This runs AFTER successful deployment, regardless of IDL registration outcome
                     let should_block = inputs
                         .get_scoped_value(&nested_construct_did.to_string(), "block_account_download")
                         .and_then(|v| v.as_bool())
