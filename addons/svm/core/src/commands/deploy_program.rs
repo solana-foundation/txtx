@@ -887,50 +887,7 @@ impl CommandImplementation for DeployProgram {
                 )
                 .map_err(|e| e)?;
 
-            // Handle auto-blocking for surfnet deployments BEFORE early returns
-            // This ensures blocking happens even for SkipCloseTempAuthority transactions
-            let is_surfnet = inputs
-                .get_scoped_value(&nested_construct_did.to_string(), IS_SURFNET)
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
-
-            let is_final_transaction = transaction_index == transaction_count - 1;
-            let should_auto_block = is_surfnet && is_final_transaction;
-
-            if should_auto_block {
-                let should_block = inputs
-                    .get_scoped_value(&nested_construct_did.to_string(), "block_account_download")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(true);
-
-                if should_block {
-                    let rpc_client_async = solana_client::nonblocking::rpc_client::RpcClient::new(
-                        rpc_api_url.clone(),
-                    );
-
-                    let block_params = serde_json::json!([{
-                        "pubkey": program_id.to_string(),
-                        "includeOwnedAccounts": true,
-                    }]);
-
-                    crate::codec::utils::send_rpc_request_async(
-                        &rpc_client_async,
-                        "surfnet_blockAccountDownload",
-                        block_params,
-                    )
-                    .await
-                    .map_err(|e| {
-                        diagnosed_error!("failed to block account download: {}", e)
-                    })?;
-
-                    logger.success_info(
-                        "Blocked Account Download",
-                        format!("Program {} and its owned accounts are now blocked from mainnet download", program_id),
-                    );
-                }
-            }
-
-            // Early return for SkipCloseTempAuthority after blocking has been performed
+            // Early return for SkipCloseTempAuthority - no deployment happens
             match &deployment_transaction.transaction_type {
                 DeploymentTransactionType::SkipCloseTempAuthority => {
                     return Ok(CommandExecutionResult::new());
@@ -1033,6 +990,35 @@ impl CommandImplementation for DeployProgram {
                                 })?;
                         }
                     };
+
+                    // Auto-block the deployed program from being downloaded from mainnet
+                    // This runs AFTER successful deployment and IDL registration
+                    let should_block = inputs
+                        .get_scoped_value(&nested_construct_did.to_string(), "block_account_download")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(true);
+
+                    if should_block {
+                        let block_params = serde_json::json!([{
+                            "pubkey": program_id.to_string(),
+                            "includeOwnedAccounts": true,
+                        }]);
+
+                        crate::codec::utils::send_rpc_request_async(
+                            &rpc_client_async,
+                            "surfnet_blockAccountDownload",
+                            block_params,
+                        )
+                        .await
+                        .map_err(|e| {
+                            diagnosed_error!("failed to block account download: {}", e)
+                        })?;
+
+                        logger.success_info(
+                            "Blocked Account Download",
+                            format!("Program {} and its owned accounts are now blocked from mainnet download", program_id),
+                        );
+                    }
                 }
             }
 
