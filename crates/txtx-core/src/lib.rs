@@ -176,6 +176,17 @@ pub async fn start_unsupervised_runbook_runloop(
     Ok(())
 }
 
+/// Returns the index of the next enabled (non-`Ignored`) flow at or after `start`,
+/// or `None` if every remaining flow has `RunbookExecutionMode::Ignored`.
+fn next_enabled_flow_index(flow_contexts: &[FlowContext], start: usize) -> Option<usize> {
+    flow_contexts
+        .iter()
+        .enumerate()
+        .skip(start)
+        .find(|(_, ctx)| ctx.is_enabled())
+        .map(|(idx, _)| idx)
+}
+
 pub async fn start_supervised_runbook_runloop(
     runbook: &mut Runbook,
     block_tx: Sender<BlockEvent>,
@@ -204,7 +215,18 @@ pub async fn start_supervised_runbook_runloop(
     let mut background_tasks_handle_uuid = Uuid::new_v4();
     let mut validated_blocks = 0;
     let total_flows_count = runbook.flow_contexts.len();
-    let mut current_flow_index: usize = 0;
+    // Honor `RunbookExecutionMode::Ignored` on stateful re-runs: skip over any leading
+    // flows that already completed in a previous invocation so the supervisor surfaces
+    // the genesis panel for the first flow with actual work to do. If every flow is
+    // `Ignored` (e.g. user re-runs an unchanged stateful runbook), there is nothing
+    // for the user to do — emit `RunbookCompleted` immediately.
+    let mut current_flow_index: usize = match next_enabled_flow_index(&runbook.flow_contexts, 0) {
+        Some(idx) => idx,
+        None => {
+            let _ = block_tx.send(BlockEvent::RunbookCompleted(vec![]));
+            return Ok(());
+        }
+    };
     loop {
         let event_opt = match action_item_responses_rx.try_recv() {
             Ok(action) => Some(action),
@@ -237,11 +259,6 @@ pub async fn start_supervised_runbook_runloop(
                 let _ = block_tx.send(event).unwrap();
             }
         }
-        let action_item_responses =
-            flow_action_item_responses.get_mut(&current_flow_index).unwrap();
-        let mut action_item_requests =
-            flow_action_item_requests.get_mut(&current_flow_index).unwrap();
-
         // Cooldown
         let Some(action_item_response) = event_opt else {
             sleep(Duration::from_millis(50));
@@ -250,11 +267,24 @@ pub async fn start_supervised_runbook_runloop(
         let ActionItemResponse { action_item_id, payload } = action_item_response.clone();
 
         if action_item_id == SET_ENV_ACTION.id {
+            // A new environment has no applied flow state or user approvals.
+            current_flow_index = 0;
+            validated_blocks = 0;
+            flow_action_item_requests.clear();
+            flow_action_item_responses.clear();
+            background_tasks_futures.clear();
+            background_tasks_contructs_dids.clear();
+            background_tasks_handle_uuid = Uuid::new_v4();
+
+            let action_item_requests =
+                flow_action_item_requests.entry(current_flow_index).or_default();
+            let action_item_responses =
+                flow_action_item_responses.entry(current_flow_index).or_default();
             if let Err(diags) = reset_runbook_execution(
                 runbook,
                 &payload,
-                &mut action_item_requests,
-                &action_item_responses,
+                action_item_requests,
+                action_item_responses,
                 &block_tx.clone(),
                 current_flow_index,
                 total_flows_count,
@@ -268,8 +298,14 @@ pub async fn start_supervised_runbook_runloop(
                 }));
                 return Err(diags);
             };
+            intialized_flow_index = current_flow_index as i16;
             continue;
         }
+
+        let action_item_responses =
+            flow_action_item_responses.get_mut(&current_flow_index).unwrap();
+        let mut action_item_requests =
+            flow_action_item_requests.get_mut(&current_flow_index).unwrap();
 
         if let Some(action_item) = action_item_requests.get(&action_item_id) {
             let action_item = action_item.clone();
@@ -414,11 +450,20 @@ pub async fn start_supervised_runbook_runloop(
                         }
                     }
                     if flow_execution_completed && !start_of_loop_had_bg_tasks {
-                        if current_flow_index == total_flows_count - 1 {
-                            let _ = block_tx.send(BlockEvent::RunbookCompleted(additional_info));
-                            return Ok(());
-                        } else {
-                            current_flow_index += 1;
+                        // Advance to the next *enabled* flow, skipping any flows that the
+                        // state-diff marked as `Ignored`. If none remain, the runbook is done.
+                        match next_enabled_flow_index(
+                            &runbook.flow_contexts,
+                            current_flow_index + 1,
+                        ) {
+                            Some(next_idx) => {
+                                current_flow_index = next_idx;
+                            }
+                            None => {
+                                let _ =
+                                    block_tx.send(BlockEvent::RunbookCompleted(additional_info));
+                                return Ok(());
+                            }
                         }
                     }
                     if !pass_has_pending_bg_tasks
@@ -631,6 +676,9 @@ pub async fn reset_runbook_execution(
         unimplemented!()
     }
 
+    // Rebuilt contexts default to `Ignored`; the new environment has no applied snapshot.
+    runbook.enable_full_execution_mode();
+
     let _ = progress_tx.send(BlockEvent::Clear);
     let genesis_events = build_genesis_panel(
         runbook,
@@ -667,6 +715,16 @@ pub async fn build_genesis_panel(
             "internal error: attempted to access a flow that does not exist"
         )]);
     };
+
+    // Defense-in-depth: if a caller passes the index of a flow that was marked
+    // `RunbookExecutionMode::Ignored` by the state-diff (i.e. already executed in a
+    // previous invocation of this stateful runbook), do not build a signers checklist
+    // or "Start Runbook" prompt for it. The supervised runloop normally skips past
+    // ignored flows via `next_enabled_flow_index`; this guard ensures the bug cannot
+    // resurface from a future caller that forgets to do the skip.
+    if !flow_context.is_enabled() {
+        return Ok(vec![]);
+    }
 
     if total_flows_count > 1 {
         actions.push_begin_flow_panel(
@@ -813,6 +871,71 @@ pub async fn process_background_tasks(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod skip_ignored_flows_tests {
+    use super::*;
+    use crate::runbook::RunbookExecutionMode;
+    use txtx_addon_kit::types::stores::ValueStore;
+    use txtx_addon_kit::types::{Did, RunbookId};
+
+    fn make_flow(name: &str, mode: RunbookExecutionMode) -> FlowContext {
+        let runbook_id = RunbookId::zero();
+        let inputs = ValueStore::new(name, &Did::zero());
+        let mut ctx = FlowContext::new(name, &runbook_id, &inputs);
+        ctx.execution_context.execution_mode = mode;
+        ctx
+    }
+
+    #[test]
+    fn returns_first_index_when_all_enabled() {
+        let flows = vec![
+            make_flow("a", RunbookExecutionMode::Full),
+            make_flow("b", RunbookExecutionMode::Full),
+        ];
+        assert_eq!(next_enabled_flow_index(&flows, 0), Some(0));
+        assert_eq!(next_enabled_flow_index(&flows, 1), Some(1));
+    }
+
+    #[test]
+    fn skips_leading_ignored_flows() {
+        let flows = vec![
+            make_flow("a", RunbookExecutionMode::Ignored),
+            make_flow("b", RunbookExecutionMode::Ignored),
+            make_flow("c", RunbookExecutionMode::Full),
+        ];
+        assert_eq!(next_enabled_flow_index(&flows, 0), Some(2));
+    }
+
+    #[test]
+    fn returns_none_when_all_ignored() {
+        let flows = vec![
+            make_flow("a", RunbookExecutionMode::Ignored),
+            make_flow("b", RunbookExecutionMode::Ignored),
+        ];
+        assert_eq!(next_enabled_flow_index(&flows, 0), None);
+    }
+
+    #[test]
+    fn skips_ignored_flows_between_enabled_ones_when_advancing() {
+        let flows = vec![
+            make_flow("a", RunbookExecutionMode::Full),
+            make_flow("b", RunbookExecutionMode::Ignored),
+            make_flow("c", RunbookExecutionMode::Ignored),
+            make_flow("d", RunbookExecutionMode::Full),
+        ];
+        // Caller has just finished flow 0 and is advancing.
+        assert_eq!(next_enabled_flow_index(&flows, 1), Some(3));
+        // No more flows after flow 3.
+        assert_eq!(next_enabled_flow_index(&flows, 4), None);
+    }
+
+    #[test]
+    fn partial_mode_is_treated_as_enabled() {
+        let flows = vec![make_flow("a", RunbookExecutionMode::Partial(vec![]))];
+        assert_eq!(next_enabled_flow_index(&flows, 0), Some(0));
+    }
 }
 
 pub async fn process_signers_action_item_response(

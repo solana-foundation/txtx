@@ -10,6 +10,8 @@ use txtx_test_utils::test_harness::setup_test;
 
 use crate::std::StdAddon;
 
+mod supervised;
+
 pub fn get_addon_by_namespace(namespace: &str) -> Option<Box<dyn Addon>> {
     let available_addons: Vec<Box<dyn Addon>> = vec![Box::new(StdAddon::new())];
     for addon in available_addons.into_iter() {
