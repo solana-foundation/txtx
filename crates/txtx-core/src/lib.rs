@@ -178,18 +178,7 @@ pub async fn start_unsupervised_runbook_runloop(
 
 /// Returns the index of the next enabled (non-`Ignored`) flow at or after `start`,
 /// or `None` if every remaining flow has `RunbookExecutionMode::Ignored`.
-///
-/// This is the supervised counterpart to the `if !flow_context.is_enabled() { continue; }`
-/// skip in [`start_unsupervised_runbook_runloop`]. The state-diff layer marks already-
-/// completed flows as [`RunbookExecutionMode::Ignored`] (see
-/// `crates/txtx-core/src/runbook/mod.rs` `prepared_flows_for_updated_plans`), and both
-/// the initial-flow pick and the post-completion advancement in the supervised runloop
-/// must honor that signal so the user is not forced to step through empty genesis panels
-/// for flows that ran in a previous invocation.
-fn next_enabled_flow_index(
-    flow_contexts: &[FlowContext],
-    start: usize,
-) -> Option<usize> {
+fn next_enabled_flow_index(flow_contexts: &[FlowContext], start: usize) -> Option<usize> {
     flow_contexts
         .iter()
         .enumerate()
@@ -231,14 +220,13 @@ pub async fn start_supervised_runbook_runloop(
     // the genesis panel for the first flow with actual work to do. If every flow is
     // `Ignored` (e.g. user re-runs an unchanged stateful runbook), there is nothing
     // for the user to do — emit `RunbookCompleted` immediately.
-    let mut current_flow_index: usize =
-        match next_enabled_flow_index(&runbook.flow_contexts, 0) {
-            Some(idx) => idx,
-            None => {
-                let _ = block_tx.send(BlockEvent::RunbookCompleted(vec![]));
-                return Ok(());
-            }
-        };
+    let mut current_flow_index: usize = match next_enabled_flow_index(&runbook.flow_contexts, 0) {
+        Some(idx) => idx,
+        None => {
+            let _ = block_tx.send(BlockEvent::RunbookCompleted(vec![]));
+            return Ok(());
+        }
+    };
     loop {
         let event_opt = match action_item_responses_rx.try_recv() {
             Ok(action) => Some(action),
@@ -674,20 +662,17 @@ pub async fn reset_runbook_execution(
         unimplemented!()
     }
 
+    // Rebuilt contexts default to `Ignored`; the new environment has no applied snapshot.
+    runbook.enable_full_execution_mode();
+
     let _ = progress_tx.send(BlockEvent::Clear);
-    // After an environment switch the per-flow execution modes may have been recomputed;
-    // re-seek to the first enabled flow so we never build a genesis panel for a flow
-    // that has already completed in the new environment's state. If none remain enabled,
-    // signal completion to the caller via `RunbookCompleted`.
-    let effective_flow_index =
-        next_enabled_flow_index(&runbook.flow_contexts, 0).unwrap_or(current_flow_index);
     let genesis_events = build_genesis_panel(
         runbook,
         action_item_requests,
         action_item_responses,
         &progress_tx,
         0,
-        effective_flow_index,
+        current_flow_index,
         total_flows_count,
     )
     .await?;
@@ -934,8 +919,7 @@ mod skip_ignored_flows_tests {
 
     #[test]
     fn partial_mode_is_treated_as_enabled() {
-        let flows =
-            vec![make_flow("a", RunbookExecutionMode::Partial(vec![]))];
+        let flows = vec![make_flow("a", RunbookExecutionMode::Partial(vec![]))];
         assert_eq!(next_enabled_flow_index(&flows, 0), Some(0));
     }
 }
