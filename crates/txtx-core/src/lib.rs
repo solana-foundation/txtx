@@ -259,11 +259,6 @@ pub async fn start_supervised_runbook_runloop(
                 let _ = block_tx.send(event).unwrap();
             }
         }
-        let action_item_responses =
-            flow_action_item_responses.get_mut(&current_flow_index).unwrap();
-        let mut action_item_requests =
-            flow_action_item_requests.get_mut(&current_flow_index).unwrap();
-
         // Cooldown
         let Some(action_item_response) = event_opt else {
             sleep(Duration::from_millis(50));
@@ -272,11 +267,24 @@ pub async fn start_supervised_runbook_runloop(
         let ActionItemResponse { action_item_id, payload } = action_item_response.clone();
 
         if action_item_id == SET_ENV_ACTION.id {
+            // A new environment has no applied flow state or user approvals.
+            current_flow_index = 0;
+            validated_blocks = 0;
+            flow_action_item_requests.clear();
+            flow_action_item_responses.clear();
+            background_tasks_futures.clear();
+            background_tasks_contructs_dids.clear();
+            background_tasks_handle_uuid = Uuid::new_v4();
+
+            let action_item_requests =
+                flow_action_item_requests.entry(current_flow_index).or_default();
+            let action_item_responses =
+                flow_action_item_responses.entry(current_flow_index).or_default();
             if let Err(diags) = reset_runbook_execution(
                 runbook,
                 &payload,
-                &mut action_item_requests,
-                &action_item_responses,
+                action_item_requests,
+                action_item_responses,
                 &block_tx.clone(),
                 current_flow_index,
                 total_flows_count,
@@ -290,8 +298,14 @@ pub async fn start_supervised_runbook_runloop(
                 }));
                 return Err(diags);
             };
+            intialized_flow_index = current_flow_index as i16;
             continue;
         }
+
+        let action_item_responses =
+            flow_action_item_responses.get_mut(&current_flow_index).unwrap();
+        let mut action_item_requests =
+            flow_action_item_requests.get_mut(&current_flow_index).unwrap();
 
         if let Some(action_item) = action_item_requests.get(&action_item_id) {
             let action_item = action_item.clone();
