@@ -2,9 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_pubkey::Pubkey;
-use txtx_addon_kit::types::{
-    diagnostics::Diagnostic, frontend::LogDispatcher, stores::ValueStore,
-};
+use txtx_addon_kit::types::{diagnostics::Diagnostic, frontend::LogDispatcher, stores::ValueStore};
 use txtx_addon_network_svm_types::SvmValue;
 
 use super::surfnet_update::SurfnetAccountUpdate;
@@ -21,42 +19,52 @@ impl SurfpoolBlockAccountDownload {
     pub fn parse_value_store(values: &ValueStore) -> Result<Vec<Self>, Diagnostic> {
         let mut blocks = vec![];
 
-        if let Some(block_entries) = values.get_value(BLOCK_ACCOUNT_DOWNLOAD) {
-            let entries = block_entries.as_array().ok_or_else(|| {
-                diagnosed_error!(
-                    "expected '{}' to be an array of block_account_download configurations",
-                    BLOCK_ACCOUNT_DOWNLOAD
-                )
-            })?;
+        let block_entries = values
+            .get_value(BLOCK_ACCOUNT_DOWNLOAD)
+            .map(|v| {
+                v.as_map().ok_or_else(|| {
+                    diagnosed_error!("'{}' must be a map type", BLOCK_ACCOUNT_DOWNLOAD)
+                })
+            })
+            .transpose()?;
 
-            for entry in entries.iter() {
-                let entry_map = entry.as_object().ok_or_else(|| {
-                    diagnosed_error!(
-                        "expected each '{}' entry to be a map with 'public_key' and optional 'include_owned_accounts'",
-                        BLOCK_ACCOUNT_DOWNLOAD
-                    )
-                })?;
+        let Some(block_entries) = block_entries else {
+            return Ok(vec![]);
+        };
 
-                let public_key_value = entry_map
-                    .get("public_key")
-                    .ok_or_else(|| {
-                        diagnosed_error!("'public_key' is required in block_account_download")
-                    })?;
+        let mut block_entries = block_entries
+            .iter()
+            .map(|i| {
+                i.as_object()
+                    .map(|o| o.clone())
+                    .ok_or(diagnosed_error!("'{}' must be a map type", BLOCK_ACCOUNT_DOWNLOAD))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
 
-                let public_key = SvmValue::to_pubkey(public_key_value).map_err(|e| {
-                    diagnosed_error!("invalid public key in block_account_download: {e}")
-                })?;
+        for (i, block_entry) in block_entries.iter_mut().enumerate() {
+            let prefix = format!("failed to parse `{}` map #{}", BLOCK_ACCOUNT_DOWNLOAD, i + 1);
 
-                let include_owned_accounts = entry_map
-                    .get("include_owned_accounts")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false);
+            let public_key = block_entry
+                .swap_remove("public_key")
+                .map(|p| {
+                    SvmValue::to_pubkey(&p)
+                        .map_err(|e| diagnosed_error!("invalid 'public_key' field: {e}"))
+                })
+                .ok_or_else(|| diagnosed_error!("missing required 'public_key'"))?
+                .map_err(|e| diagnosed_error!("{prefix}: {e}"))?;
 
-                blocks.push(SurfpoolBlockAccountDownload {
-                    public_key,
-                    include_owned_accounts,
-                });
-            }
+            let include_owned_accounts = block_entry
+                .swap_remove("include_owned_accounts")
+                .map(|v| {
+                    v.as_bool().ok_or_else(|| {
+                        diagnosed_error!("expected 'include_owned_accounts' field to be a boolean")
+                    })
+                })
+                .transpose()
+                .map_err(|e| diagnosed_error!("{prefix}: {e}"))?
+                .unwrap_or(false);
+
+            blocks.push(SurfpoolBlockAccountDownload { public_key, include_owned_accounts });
         }
 
         Ok(blocks)
@@ -82,12 +90,7 @@ impl SurfpoolBlockAccountDownload {
 
         let params = self.to_request_params();
 
-        crate::codec::utils::send_rpc_request_async(
-            rpc_client,
-            Self::rpc_method(),
-            params,
-        )
-        .await?;
+        crate::codec::utils::send_rpc_request_async(rpc_client, Self::rpc_method(), params).await?;
 
         logger.success_info(
             "Blocked Account Download",
@@ -103,14 +106,14 @@ impl SurfnetAccountUpdate for SurfpoolBlockAccountDownload {
     where
         Self: Sized,
     {
-        "surfnet_blockAccountDownload"
+        "surfnet_offlineAccount"
     }
 
     fn to_request_params(&self) -> serde_json::Value {
-        json!([{
-            "pubkey": self.public_key.to_string(),
-            "includeOwnedAccounts": self.include_owned_accounts,
-        }])
+        json!([
+            self.public_key.to_string(),
+            { "includeOwnedAccounts": self.include_owned_accounts }
+        ])
     }
 
     fn update_status(&self, logger: &LogDispatcher, _index: usize, _total: usize) {
@@ -119,11 +122,7 @@ impl SurfnetAccountUpdate for SurfpoolBlockAccountDownload {
             format!(
                 "Blocking account {} from being downloaded from mainnet{}",
                 self.public_key,
-                if self.include_owned_accounts {
-                    " (including owned accounts)"
-                } else {
-                    ""
-                }
+                if self.include_owned_accounts { " (including owned accounts)" } else { "" }
             ),
         );
     }
@@ -132,22 +131,26 @@ impl SurfnetAccountUpdate for SurfpoolBlockAccountDownload {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::str::FromStr;
     use txtx_addon_kit::types::types::Value;
+    use txtx_addon_kit::types::Did;
+
+    fn new_value_store() -> ValueStore {
+        ValueStore::new("test", &Did::from_components(vec![b"test"]))
+    }
 
     #[test]
     fn test_block_account_download_parsing() {
-        let mut value_store = ValueStore::new();
+        let mut value_store = new_value_store();
 
         let test_pubkey = "11111111111111111111111111111111";
 
         value_store.insert(
-            "block_account_download".to_string(),
-            Value::array(vec![
-                Value::object(indexmap::indexmap! {
-                    "public_key".to_string() => Value::string(test_pubkey.to_string()),
-                    "include_owned_accounts".to_string() => Value::bool(true),
-                })
-            ])
+            "block_account_download",
+            Value::array(vec![Value::object(txtx_addon_kit::indexmap::indexmap! {
+                "public_key".to_string() => Value::string(test_pubkey.to_string()),
+                "include_owned_accounts".to_string() => Value::bool(true),
+            })]),
         );
 
         let result = SurfpoolBlockAccountDownload::parse_value_store(&value_store);
@@ -161,17 +164,15 @@ mod tests {
 
     #[test]
     fn test_block_account_download_default_include_owned() {
-        let mut value_store = ValueStore::new();
+        let mut value_store = new_value_store();
 
         let test_pubkey = "11111111111111111111111111111111";
 
         value_store.insert(
-            "block_account_download".to_string(),
-            Value::array(vec![
-                Value::object(indexmap::indexmap! {
-                    "public_key".to_string() => Value::string(test_pubkey.to_string()),
-                })
-            ])
+            "block_account_download",
+            Value::array(vec![Value::object(txtx_addon_kit::indexmap::indexmap! {
+                "public_key".to_string() => Value::string(test_pubkey.to_string()),
+            })]),
         );
 
         let result = SurfpoolBlockAccountDownload::parse_value_store(&value_store);
@@ -184,15 +185,13 @@ mod tests {
 
     #[test]
     fn test_block_account_download_invalid_pubkey() {
-        let mut value_store = ValueStore::new();
+        let mut value_store = new_value_store();
 
         value_store.insert(
-            "block_account_download".to_string(),
-            Value::array(vec![
-                Value::object(indexmap::indexmap! {
-                    "public_key".to_string() => Value::string("invalid_key".to_string()),
-                })
-            ])
+            "block_account_download",
+            Value::array(vec![Value::object(txtx_addon_kit::indexmap::indexmap! {
+                "public_key".to_string() => Value::string("invalid_key".to_string()),
+            })]),
         );
 
         let result = SurfpoolBlockAccountDownload::parse_value_store(&value_store);
@@ -201,15 +200,13 @@ mod tests {
 
     #[test]
     fn test_block_account_download_missing_pubkey() {
-        let mut value_store = ValueStore::new();
+        let mut value_store = new_value_store();
 
         value_store.insert(
-            "block_account_download".to_string(),
-            Value::array(vec![
-                Value::object(indexmap::indexmap! {
-                    "include_owned_accounts".to_string() => Value::bool(true),
-                })
-            ])
+            "block_account_download",
+            Value::array(vec![Value::object(txtx_addon_kit::indexmap::indexmap! {
+                "include_owned_accounts".to_string() => Value::bool(true),
+            })]),
         );
 
         let result = SurfpoolBlockAccountDownload::parse_value_store(&value_store);
@@ -218,53 +215,62 @@ mod tests {
 
     #[test]
     fn test_rpc_method_name() {
-        assert_eq!(
-            SurfpoolBlockAccountDownload::rpc_method(),
-            "surfnet_blockAccountDownload"
-        );
+        assert_eq!(SurfpoolBlockAccountDownload::rpc_method(), "surfnet_offlineAccount");
     }
 
     #[test]
     fn test_to_request_params_format() {
         let pubkey = Pubkey::from_str("11111111111111111111111111111111").unwrap();
-        let block = SurfpoolBlockAccountDownload {
-            public_key: pubkey,
-            include_owned_accounts: true,
-        };
+        let block =
+            SurfpoolBlockAccountDownload { public_key: pubkey, include_owned_accounts: true };
 
         let params = block.to_request_params();
 
         assert!(params.is_array());
         let params_array = params.as_array().unwrap();
-        assert_eq!(params_array.len(), 1);
+        assert_eq!(params_array.len(), 2);
 
-        let first_param = &params_array[0];
-        assert!(first_param.is_object());
+        // The pubkey is passed as a base-58 string, as the first positional param.
+        assert_eq!(params_array[0].as_str().unwrap(), "11111111111111111111111111111111");
 
-        let obj = first_param.as_object().unwrap();
-        assert_eq!(obj.get("pubkey").unwrap().as_str().unwrap(), "11111111111111111111111111111111");
-        assert_eq!(obj.get("includeOwnedAccounts").unwrap().as_bool().unwrap(), true);
+        // The options are passed as a separate object, as the second positional param.
+        let config = params_array[1].as_object().unwrap();
+        assert_eq!(config.get("includeOwnedAccounts").unwrap().as_bool().unwrap(), true);
+    }
+
+    #[test]
+    fn test_to_request_params_format_without_owned_accounts() {
+        let pubkey = Pubkey::from_str("11111111111111111111111111111111").unwrap();
+        let block =
+            SurfpoolBlockAccountDownload { public_key: pubkey, include_owned_accounts: false };
+
+        let params = block.to_request_params();
+        let params_array = params.as_array().unwrap();
+        assert_eq!(params_array.len(), 2);
+        assert_eq!(params_array[0].as_str().unwrap(), "11111111111111111111111111111111");
+        let config = params_array[1].as_object().unwrap();
+        assert_eq!(config.get("includeOwnedAccounts").unwrap().as_bool().unwrap(), false);
     }
 
     #[test]
     fn test_multiple_blocks_parsing() {
-        let mut value_store = ValueStore::new();
+        let mut value_store = new_value_store();
 
         let pubkey1 = "11111111111111111111111111111111";
-        let pubkey2 = "22222222222222222222222222222222";
+        let pubkey2 = "4EXSeLGxVBpAZwq7vm6evLdewpcvE2H56fpqL2pPiLFa";
 
         value_store.insert(
-            "block_account_download".to_string(),
+            "block_account_download",
             Value::array(vec![
-                Value::object(indexmap::indexmap! {
+                Value::object(txtx_addon_kit::indexmap::indexmap! {
                     "public_key".to_string() => Value::string(pubkey1.to_string()),
                     "include_owned_accounts".to_string() => Value::bool(true),
                 }),
-                Value::object(indexmap::indexmap! {
+                Value::object(txtx_addon_kit::indexmap::indexmap! {
                     "public_key".to_string() => Value::string(pubkey2.to_string()),
                     "include_owned_accounts".to_string() => Value::bool(false),
-                })
-            ])
+                }),
+            ]),
         );
 
         let result = SurfpoolBlockAccountDownload::parse_value_store(&value_store);

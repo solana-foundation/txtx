@@ -731,6 +731,12 @@
           "optional": true
         },
         {
+          "name": "block_account_download",
+          "documentation": "If set to `true`, the deployed program and its owned accounts will be blocked from being downloaded from mainnet when deploying to a Surfnet. Defaults to `true`.",
+          "typing": "bool",
+          "optional": true
+        },
+        {
           "name": "ephemeral_authority_secret_key",
           "documentation": "An optional base-58 encoded keypair string to use as the temporary upgrade authority during deployment. If not provided, a new ephemeral keypair will be generated.",
           "typing": "string",
@@ -968,7 +974,7 @@
     {
       "id": "setup_surfnet",
       "name": "Setup Surfpool",
-      "documentation": "`svm::setup_surfnet` can be used to configure a surfnet.\n\nThe following operations are supported:\n - `set_account` - used to set the lamports, owner, data, and executable fields of an account.\n - `set_token_account` - used to set the amount, delegate, delegated amount, and close authority for a token account.\n - `clone_program_account` - used to clone a program account from a source program id to a destination program id.\n - `set_program_authority` - used to set the authority of a program.\n - `deploy_program` - used to deploy a program (via a direct write to the account data rather than valid transactions) to the surfnet.\n - `reset_account` - used to reset an account on the surfnet, removing it from the local cache to be pulled again from the upstream.\n - `stream_account` - used to stream account data from the mainnet RPC url to the surfnet so that the local account data always matches mainnet, optionally including all owned accounts.\n\n",
+      "documentation": "`svm::setup_surfnet` can be used to configure a surfnet.\n\nThe following operations are supported:\n - `set_account` - used to set the lamports, owner, data, and executable fields of an account.\n - `set_token_account` - used to set the amount, delegate, delegated amount, and close authority for a token account.\n - `clone_program_account` - used to clone a program account from a source program id to a destination program id.\n - `set_program_authority` - used to set the authority of a program.\n - `deploy_program` - used to deploy a program (via a direct write to the account data rather than valid transactions) to the surfnet.\n - `reset_account` - used to reset an account on the surfnet, removing it from the local cache to be pulled again from the upstream.\n - `stream_account` - used to stream account data from the mainnet RPC url to the surfnet so that the local account data always matches mainnet, optionally including all owned accounts.\n - `block_account_download` - used to block an account from being downloaded from mainnet, preventing it from being overwritten by upstream data, optionally including all owned accounts.\n\n",
       "inputs": [
         {
           "name": "description",
@@ -1021,6 +1027,12 @@
         {
           "name": "stream_account",
           "documentation": "The account stream data to set.",
+          "typing": "map",
+          "optional": true
+        },
+        {
+          "name": "block_account_download",
+          "documentation": "Block accounts from being downloaded from mainnet.",
           "typing": "map",
           "optional": true
         }

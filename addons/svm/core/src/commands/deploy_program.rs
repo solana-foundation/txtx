@@ -40,13 +40,13 @@ use crate::codec::send_transaction::send_transaction_background_task;
 use crate::codec::utils::{cheatcode_deploy_program, cheatcode_register_idl};
 use crate::codec::{DeploymentTransaction, ProgramArtifacts, UpgradeableProgramDeployer};
 use crate::constants::{
-    ACTION_ITEM_PROVIDE_SIGNED_TRANSACTION, AUTHORITY, AUTO_EXTEND, BUFFER_ACCOUNT_PUBKEY,
-    CHECKED_PUBLIC_KEY, COMMITMENT_LEVEL, DEPLOYMENT_TRANSACTIONS, DEPLOYMENT_TRANSACTION_TYPE,
-    DO_AWAIT_CONFIRMATION, EPHEMERAL_AUTHORITY_SECRET_KEY, FORMATTED_TRANSACTION,
-    INITIAL_EXPECTED_DEPLOYMENT_TRANSACTIONS_COUNT, INSTANT_SURFNET_DEPLOYMENT, IS_DEPLOYMENT,
-    IS_SQUADS_AUTHORITY, IS_SURFNET, NAMESPACE, NETWORK_ID, PAYER, PROGRAM,
-    PROGRAM_DEPLOYMENT_KEYPAIR, PROGRAM_ID, PROGRAM_IDL, RPC_API_URL, SIGNATURE, SIGNATURES,
-    SIGNED_NESTED_EXECUTION_INDEX, SIGNERS, SLOT, TRANSACTION_BYTES,
+    ACTION_ITEM_PROVIDE_SIGNED_TRANSACTION, AUTHORITY, AUTO_EXTEND, BLOCK_ACCOUNT_DOWNLOAD,
+    BUFFER_ACCOUNT_PUBKEY, CHECKED_PUBLIC_KEY, COMMITMENT_LEVEL, DEPLOYMENT_TRANSACTIONS,
+    DEPLOYMENT_TRANSACTION_TYPE, DO_AWAIT_CONFIRMATION, EPHEMERAL_AUTHORITY_SECRET_KEY,
+    FORMATTED_TRANSACTION, INITIAL_EXPECTED_DEPLOYMENT_TRANSACTIONS_COUNT,
+    INSTANT_SURFNET_DEPLOYMENT, IS_DEPLOYMENT, IS_SQUADS_AUTHORITY, IS_SURFNET, NAMESPACE,
+    NETWORK_ID, PAYER, PROGRAM, PROGRAM_DEPLOYMENT_KEYPAIR, PROGRAM_ID, PROGRAM_IDL, RPC_API_URL,
+    SIGNATURE, SIGNATURES, SIGNED_NESTED_EXECUTION_INDEX, SIGNERS, SLOT, TRANSACTION_BYTES,
 };
 use crate::signers::squads::{
     SQUADS_DEPLOYMENT_ADDITIONAL_INFO, SQUADS_DEPLOYMENT_ADDITIONAL_INFO_TITLE, SQUADS_MATCHER,
@@ -543,11 +543,13 @@ impl CommandImplementation for DeployProgram {
                 Value::bool(is_surfnet),
             );
 
-            // Copy block_account_download flag from parent scope to nested transaction scope
-            if let Some(block_flag) = values.get_value("block_account_download") {
+            // Copy the `block_account_download` flag from the parent scope to the nested
+            // transaction scope, so the deployment can block the program from being
+            // downloaded from mainnet once it is deployed.
+            if let Some(block_flag) = values.get_value(BLOCK_ACCOUNT_DOWNLOAD) {
                 value_store.insert_scoped_value(
                     &new_did.to_string(),
-                    "block_account_download",
+                    BLOCK_ACCOUNT_DOWNLOAD,
                     block_flag.clone(),
                 );
             }
@@ -887,82 +889,89 @@ impl CommandImplementation for DeployProgram {
                 )
                 .map_err(|e| e)?;
 
-            // Early return for SkipCloseTempAuthority - no deployment happens
-            match &deployment_transaction.transaction_type {
-                DeploymentTransactionType::SkipCloseTempAuthority => {
-                    return Ok(CommandExecutionResult::new());
-                }
-                _ => {}
+            // The deployment is only complete once the last transaction has been
+            // processed. That last transaction can be a `SkipCloseTempAuthority`
+            // no-op (when the ephemeral authority has no leftover funds), so the
+            // post-deployment steps below have to be evaluated before its early
+            // return, otherwise the program would never be blocked from being
+            // downloaded from mainnet.
+            let is_last_transaction = transaction_index == transaction_count - 1;
+            let is_skipped_transaction = matches!(
+                deployment_transaction.transaction_type,
+                DeploymentTransactionType::SkipCloseTempAuthority
+            );
+
+            let mut result = CommandExecutionResult::new();
+            if !is_skipped_transaction {
+                result = match deployment_transaction.transaction_type {
+                    DeploymentTransactionType::CheatcodeDeployment
+                    | DeploymentTransactionType::CheatcodeUpgrade => {
+                        let (upgrade_authority, data) =
+                            deployment_transaction.cheatcode_data.as_ref().unwrap();
+                        cheatcode_deploy_program(
+                            &solana_client::nonblocking::rpc_client::RpcClient::new(
+                                rpc_api_url.clone(),
+                            ),
+                            program_id,
+                            data,
+                            Some(*upgrade_authority),
+                        )
+                        .await
+                        .map_err(|e| diagnosed_error!("failed to deploy program: {}", e))?;
+
+                        CommandExecutionResult::new()
+                    }
+                    _ => {
+                        let Some(signed_transaction_value) = inputs
+                            .get_scoped_value(
+                                &nested_construct_did.to_string(),
+                                SIGNED_TRANSACTION_BYTES,
+                            )
+                            .cloned()
+                        else {
+                            return Ok(CommandExecutionResult::from_value_store(&outputs));
+                        };
+
+                        inputs.insert(IS_DEPLOYMENT, Value::bool(true));
+                        inputs.insert(SIGNED_TRANSACTION_BYTES, signed_transaction_value.clone());
+                        inputs.insert(
+                            COMMITMENT_LEVEL,
+                            Value::string(deployment_transaction.commitment_level.to_string()),
+                        );
+                        inputs.insert(
+                            DO_AWAIT_CONFIRMATION,
+                            Value::bool(deployment_transaction.do_await_confirmation),
+                        );
+
+                        let mut result = match send_transaction_background_task(
+                            &construct_did,
+                            &spec,
+                            &inputs,
+                            &outputs,
+                            &progress_tx,
+                            &supervision_context,
+                        ) {
+                            Ok(res) => match res.await {
+                                Ok(res) => res,
+                                Err(e) => return Err(e),
+                            },
+                            Err(e) => return Err(e),
+                        };
+
+                        let signature = result.outputs.remove(SIGNATURE).unwrap();
+                        result.outputs.insert(
+                            format!("{}:{}", &nested_construct_did.to_string(), SIGNATURE),
+                            signature,
+                        );
+                        result
+                    }
+                };
+
+                deployment_transaction.post_send_status_updates(&logger, program_id);
+                deployment_transaction.post_send_actions(&rpc_api_url);
             }
 
-            let mut result = match deployment_transaction.transaction_type {
-                DeploymentTransactionType::CheatcodeDeployment
-                | DeploymentTransactionType::CheatcodeUpgrade => {
-                    let (upgrade_authority, data) =
-                        deployment_transaction.cheatcode_data.as_ref().unwrap();
-                    cheatcode_deploy_program(
-                        &solana_client::nonblocking::rpc_client::RpcClient::new(
-                            rpc_api_url.clone(),
-                        ),
-                        program_id,
-                        data,
-                        Some(*upgrade_authority),
-                    )
-                    .await
-                    .map_err(|e| diagnosed_error!("failed to deploy program: {}", e))?;
-
-                    CommandExecutionResult::new()
-                }
-                _ => {
-                    let Some(signed_transaction_value) = inputs
-                        .get_scoped_value(
-                            &nested_construct_did.to_string(),
-                            SIGNED_TRANSACTION_BYTES,
-                        )
-                        .cloned()
-                    else {
-                        return Ok(CommandExecutionResult::from_value_store(&outputs));
-                    };
-
-                    inputs.insert(IS_DEPLOYMENT, Value::bool(true));
-                    inputs.insert(SIGNED_TRANSACTION_BYTES, signed_transaction_value.clone());
-                    inputs.insert(
-                        COMMITMENT_LEVEL,
-                        Value::string(deployment_transaction.commitment_level.to_string()),
-                    );
-                    inputs.insert(
-                        DO_AWAIT_CONFIRMATION,
-                        Value::bool(deployment_transaction.do_await_confirmation),
-                    );
-
-                    let mut result = match send_transaction_background_task(
-                        &construct_did,
-                        &spec,
-                        &inputs,
-                        &outputs,
-                        &progress_tx,
-                        &supervision_context,
-                    ) {
-                        Ok(res) => match res.await {
-                            Ok(res) => res,
-                            Err(e) => return Err(e),
-                        },
-                        Err(e) => return Err(e),
-                    };
-
-                    let signature = result.outputs.remove(SIGNATURE).unwrap();
-                    result.outputs.insert(
-                        format!("{}:{}", &nested_construct_did.to_string(), SIGNATURE),
-                        signature,
-                    );
-                    result
-                }
-            };
-
-            deployment_transaction.post_send_status_updates(&logger, program_id);
-            deployment_transaction.post_send_actions(&rpc_api_url);
-
-            if transaction_index == transaction_count - 1 {
+            if is_last_transaction {
                 let rpc_client = RpcClient::new(rpc_api_url.clone());
                 if let Ok(slot) = rpc_client.get_slot() {
                     result.insert(SLOT, Value::integer(slot as i128));
@@ -970,14 +979,12 @@ impl CommandImplementation for DeployProgram {
 
                 let is_surfnet = inputs
                     .get_scoped_value(&nested_construct_did.to_string(), IS_SURFNET)
-                    .unwrap()
-                    .as_bool()
-                    .unwrap();
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
 
                 if is_surfnet {
-                    let rpc_client_async = solana_client::nonblocking::rpc_client::RpcClient::new(
-                        rpc_api_url.clone(),
-                    );
+                    let rpc_client_async =
+                        solana_client::nonblocking::rpc_client::RpcClient::new(rpc_api_url.clone());
 
                     // Try to register IDL if present, but preserve the error to return after blocking
                     let idl_registration_error = if let Some(idl) = inputs
@@ -993,33 +1000,46 @@ impl CommandImplementation for DeployProgram {
                         None
                     };
 
-                    // Auto-block the deployed program from being downloaded from mainnet
-                    // This runs AFTER successful deployment, regardless of IDL registration outcome
+                    // Auto-block the deployed program from being downloaded from mainnet.
+                    // This runs AFTER successful deployment, regardless of IDL registration outcome.
                     let should_block = inputs
-                        .get_scoped_value(&nested_construct_did.to_string(), "block_account_download")
+                        .get_scoped_value(&nested_construct_did.to_string(), BLOCK_ACCOUNT_DOWNLOAD)
                         .and_then(|v| v.as_bool())
                         .unwrap_or(true);
 
                     if should_block {
-                        let block_params = serde_json::json!([{
-                            "pubkey": program_id.to_string(),
-                            "includeOwnedAccounts": true,
-                        }]);
+                        // The surfnet cheatcode expects the pubkey and the options as two
+                        // separate positional params.
+                        let block_params = serde_json::json!([
+                            program_id.to_string(),
+                            { "includeOwnedAccounts": true }
+                        ]);
 
-                        crate::codec::utils::send_rpc_request_async(
+                        match crate::codec::utils::send_rpc_request_async(
                             &rpc_client_async,
-                            "surfnet_blockAccountDownload",
+                            "surfnet_offlineAccount",
                             block_params,
                         )
                         .await
-                        .map_err(|e| {
-                            diagnosed_error!("failed to block account download: {}", e)
-                        })?;
-
-                        logger.success_info(
-                            "Blocked Account Download",
-                            format!("Program {} and its owned accounts are now blocked from mainnet download", program_id),
-                        );
+                        {
+                            Ok(_) => {
+                                logger.success_info(
+                                    "Blocked Account Download",
+                                    format!("Program {} and its owned accounts are now blocked from mainnet download", program_id),
+                                );
+                            }
+                            Err(e) => {
+                                // The program has already been deployed at this point, so
+                                // failing to block the download must not fail the deployment.
+                                logger.warn(
+                                    "Failed to Block Account Download",
+                                    format!(
+                                        "Program {} could not be blocked from mainnet download: {}",
+                                        program_id, e
+                                    ),
+                                );
+                            }
+                        }
                     }
 
                     // Now return IDL registration error if one occurred

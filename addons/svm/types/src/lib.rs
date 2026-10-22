@@ -422,10 +422,16 @@ impl SvmValue {
             Some(s) => {
                 if is_hex(s) {
                     let hex = decode_hex(s).map_err(|e| e.message)?;
-                    let bytes: [u8; 32] = hex[0..32]
-                        .try_into()
-                        .map_err(|e| format!("could not convert value to pubkey: {e}"))?;
-                    return Ok(Pubkey::new_from_array(bytes));
+                    // Only a 32-byte hex value can be a pubkey. Anything else is
+                    // interpreted as base58, so that a base58 address made up of
+                    // hex digits only (e.g. the system program) is not mistaken
+                    // for a truncated hex value.
+                    if hex.len() == 32 {
+                        let bytes: [u8; 32] = hex[0..32]
+                            .try_into()
+                            .map_err(|e| format!("could not convert value to pubkey: {e}"))?;
+                        return Ok(Pubkey::new_from_array(bytes));
+                    }
                 }
                 return Pubkey::from_str(s)
                     .map_err(|e| format!("could not convert value to pubkey: {e}"));
@@ -433,6 +439,12 @@ impl SvmValue {
             None => {}
         };
         let bytes = value.to_be_bytes();
+        if bytes.len() < 32 {
+            return Err(format!(
+                "could not convert value to pubkey: expected at least 32 bytes, got {}",
+                bytes.len()
+            ));
+        }
         let bytes: [u8; 32] = bytes[0..32]
             .try_into()
             .map_err(|e| format!("could not convert value to pubkey: {e}"))?;
@@ -1071,5 +1083,53 @@ impl DeploymentTransactionType {
             DeploymentTransactionType::CheatcodeUpgrade => "cheatcode_upgrade",
         }
         .into()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn to_pubkey_parses_base58_address_made_of_hex_digits() {
+        // The system program address only contains hex digits, but it is a valid
+        // base58 pubkey. It must not be mistaken for a (truncated) hex value.
+        let pubkey =
+            SvmValue::to_pubkey(&Value::string("11111111111111111111111111111111".to_string()))
+                .unwrap();
+        assert_eq!(pubkey, Pubkey::new_from_array([0u8; 32]));
+    }
+
+    #[test]
+    fn to_pubkey_parses_base58_address() {
+        let pubkey = SvmValue::to_pubkey(&Value::string(
+            "4EXSeLGxVBpAZwq7vm6evLdewpcvE2H56fpqL2pPiLFa".to_string(),
+        ))
+        .unwrap();
+        assert_eq!(pubkey.to_string(), "4EXSeLGxVBpAZwq7vm6evLdewpcvE2H56fpqL2pPiLFa");
+    }
+
+    #[test]
+    fn to_pubkey_parses_32_byte_hex_value() {
+        // 32 bytes, hex encoded.
+        let hex = "0000000000000000000000000000000000000000000000000000000000000001";
+        let pubkey = SvmValue::to_pubkey(&Value::string(hex.to_string())).unwrap();
+        let mut expected = [0u8; 32];
+        expected[31] = 1;
+        assert_eq!(pubkey, Pubkey::new_from_array(expected));
+    }
+
+    #[test]
+    fn to_pubkey_errors_on_truncated_hex_value() {
+        // A hex value that is not 32 bytes long must return an error instead of
+        // panicking.
+        let res = SvmValue::to_pubkey(&Value::string("deadbeef".to_string()));
+        assert!(res.is_err(), "expected an error, got {:?}", res);
+    }
+
+    #[test]
+    fn to_pubkey_errors_on_invalid_value() {
+        let res = SvmValue::to_pubkey(&Value::string("invalid_key".to_string()));
+        assert!(res.is_err(), "expected an error, got {:?}", res);
     }
 }
