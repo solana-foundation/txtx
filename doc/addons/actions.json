@@ -732,7 +732,7 @@
         },
         {
           "name": "block_account_download",
-          "documentation": "If set to `true`, the deployed program and its owned accounts will be blocked from being downloaded from mainnet when deploying to a Surfnet. Defaults to `true`.",
+          "documentation": "If set to `true`, the deployed program and its owned accounts will be blocked from being downloaded from mainnet when deploying to a Surfnet. Defaults to `false`.",
           "typing": "bool",
           "optional": true
         },

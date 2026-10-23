@@ -126,7 +126,7 @@ lazy_static! {
                         sensitive: false
                     },
                     block_account_download: {
-                        documentation: "If set to `true`, the deployed program and its owned accounts will be blocked from being downloaded from mainnet when deploying to a Surfnet. Defaults to `true`.",
+                        documentation: "If set to `true`, the deployed program and its owned accounts will be blocked from being downloaded from mainnet when deploying to a Surfnet. Defaults to `false`.",
                         typing: Type::bool(),
                         optional: true,
                         tainting: false,
@@ -1000,12 +1000,14 @@ impl CommandImplementation for DeployProgram {
                         None
                     };
 
-                    // Auto-block the deployed program from being downloaded from mainnet.
+                    // Block the deployed program and its owned accounts from being
+                    // downloaded from mainnet. Opt-in via `block_account_download`
+                    // (defaults to false, per review; setup_surfnet handles manual blocks).
                     // This runs AFTER successful deployment, regardless of IDL registration outcome.
                     let should_block = inputs
                         .get_scoped_value(&nested_construct_did.to_string(), BLOCK_ACCOUNT_DOWNLOAD)
                         .and_then(|v| v.as_bool())
-                        .unwrap_or(true);
+                        .unwrap_or(false);
 
                     if should_block {
                         // The surfnet cheatcode expects the pubkey and the options as two

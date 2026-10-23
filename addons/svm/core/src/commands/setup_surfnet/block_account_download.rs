@@ -50,7 +50,7 @@ impl SurfpoolBlockAccountDownload {
                     SvmValue::to_pubkey(&p)
                         .map_err(|e| diagnosed_error!("invalid 'public_key' field: {e}"))
                 })
-                .ok_or_else(|| diagnosed_error!("missing required 'public_key'"))?
+                .ok_or_else(|| diagnosed_error!("{prefix}: missing required 'public_key'"))?
                 .map_err(|e| diagnosed_error!("{prefix}: {e}"))?;
 
             let include_owned_accounts = block_entry
