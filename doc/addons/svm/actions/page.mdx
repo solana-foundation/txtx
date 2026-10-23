@@ -176,6 +176,11 @@ action "program_call" "svm::process_instructions" {
   </Property>
 
 
+  <Property name="block_account_download" required="optional" type="bool">
+    If set to `true`, the deployed program and its owned accounts will be blocked from being downloaded from mainnet when deploying to a Surfnet. Defaults to `false`.
+  </Property>
+
+
   <Property name="ephemeral_authority_secret_key" required="optional" type="string">
     An optional base-58 encoded keypair string to use as the temporary upgrade authority during deployment. If not provided, a new ephemeral keypair will be generated.
   </Property>
@@ -735,6 +740,7 @@ The following operations are supported:
  - `deploy_program` - used to deploy a program (via a direct write to the account data rather than valid transactions) to the surfnet.
  - `reset_account` - used to reset an account on the surfnet, removing it from the local cache to be pulled again from the upstream.
  - `stream_account` - used to stream account data from the mainnet RPC url to the surfnet so that the local account data always matches mainnet, optionally including all owned accounts.
+ - `block_account_download` - used to block an account from being downloaded from mainnet, preventing it from being overwritten by upstream data, optionally including all owned accounts.
 
 
 
@@ -811,6 +817,13 @@ The following operations are supported:
     The account stream data to set. This is a map type containing the keys:
   - **public_key**: The public key of the account to stream.
   - **include_owned_accounts**: Whether to recursively stream all accounts owned by this account. Default is false.
+  </Property>
+
+
+  <Property name="block_account_download" required="optional" type="map">
+    Block accounts from being downloaded from mainnet. This is a map type containing the keys:
+  - **public_key**: The public key of the account to block from being downloaded from mainnet.
+  - **include_owned_accounts**: Whether to recursively block all accounts owned by this account. Default is false.
   </Property>
 
 

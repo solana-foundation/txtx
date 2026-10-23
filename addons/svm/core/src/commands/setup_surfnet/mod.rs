@@ -1,3 +1,4 @@
+mod block_account_download;
 mod cheatcode_deploy_program;
 pub mod clone_program_account;
 mod reset_account;
@@ -10,6 +11,7 @@ pub mod tokens;
 
 use surfnet_update::SurfnetAccountUpdate;
 
+use block_account_download::SurfpoolBlockAccountDownload;
 use clone_program_account::SurfpoolProgramCloning;
 use set_account::SurfpoolAccountUpdate;
 use set_token_account::SurfpoolTokenAccountUpdate;
@@ -27,8 +29,8 @@ use txtx_addon_kit::types::types::{RunbookSupervisionContext, Type};
 use txtx_addon_kit::types::ConstructDid;
 use txtx_addon_kit::uuid::Uuid;
 use txtx_addon_network_svm_types::{
-    CLONE_PROGRAM_ACCOUNT, DEPLOY_PROGRAM, RESET_ACCOUNT, SET_ACCOUNT_MAP, SET_PROGRAM_AUTHORITY,
-    SET_TOKEN_ACCOUNT_MAP, STREAM_ACCOUNT,
+    BLOCK_ACCOUNT_DOWNLOAD_MAP, CLONE_PROGRAM_ACCOUNT, DEPLOY_PROGRAM, RESET_ACCOUNT,
+    SET_ACCOUNT_MAP, SET_PROGRAM_AUTHORITY, SET_TOKEN_ACCOUNT_MAP, STREAM_ACCOUNT,
 };
 
 use crate::commands::setup_surfnet::set_program_authority::SurfpoolSetProgramAuthority;
@@ -52,6 +54,7 @@ lazy_static! {
                      - `deploy_program` - used to deploy a program (via a direct write to the account data rather than valid transactions) to the surfnet.
                      - `reset_account` - used to reset an account on the surfnet, removing it from the local cache to be pulled again from the upstream.
                      - `stream_account` - used to stream account data from the mainnet RPC url to the surfnet so that the local account data always matches mainnet, optionally including all owned accounts.
+                     - `block_account_download` - used to block an account from being downloaded from mainnet, preventing it from being overwritten by upstream data, optionally including all owned accounts.
 
                 "#},
                 implements_signing_capability: false,
@@ -124,6 +127,14 @@ lazy_static! {
                     stream_account: {
                         documentation: "The account stream data to set.",
                         typing: STREAM_ACCOUNT.clone(),
+                        optional: true,
+                        tainting: false,
+                        internal: false,
+                        sensitive: false
+                    },
+                    block_account_download: {
+                        documentation: "Block accounts from being downloaded from mainnet.",
+                        typing: BLOCK_ACCOUNT_DOWNLOAD_MAP.clone(),
                         optional: true,
                         tainting: false,
                         internal: false,
@@ -267,6 +278,9 @@ impl CommandImplementation for SetupSurfpool {
             let streams = stream_account::SurfpoolStreamAccount::parse_value_store(&values)?;
             stream_account::SurfpoolStreamAccount::process_updates(streams, &rpc_client, &logger)
                 .await?;
+
+            let blocks = SurfpoolBlockAccountDownload::parse_value_store(&values)?;
+            SurfpoolBlockAccountDownload::process_updates(blocks, &rpc_client, &logger).await?;
 
             Ok(result)
         };
