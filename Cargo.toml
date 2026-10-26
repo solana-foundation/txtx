@@ -26,11 +26,11 @@ reqwest = { version = "0.12.28", default-features = false, features = [
     "json",
     "rustls-tls",
 ]}
-txtx-core = { path = "crates/txtx-core", version = "0.4.16", default-features = false }
-txtx-addon-kit = { path = "crates/txtx-addon-kit", version = "0.4.13", default-features = false }
-txtx-gql = { path = "crates/txtx-gql", version = "0.3.9" }
-txtx-supervisor-ui = { path = "crates/txtx-supervisor-ui", version = "0.2.10" }
+txtx-core = { path = "crates/txtx-core", version = "0.4.19", default-features = false }
+txtx-addon-kit = { path = "crates/txtx-addon-kit", version = "0.4.16", default-features = false }
+txtx-gql = { path = "crates/txtx-gql", version = "0.3.12" }
+txtx-supervisor-ui = { path = "crates/txtx-supervisor-ui", version = "0.2.12" }
 txtx-addon-network-evm = { path = "addons/evm", version = "0.1.2" }
-txtx-addon-network-svm-types = { path = "addons/svm/types", version = "0.3.18" }
-txtx-addon-network-svm = { path = "addons/svm/core", version = "0.3.20" }
+txtx-addon-network-svm-types = { path = "addons/svm/types", version = "0.3.21" }
+txtx-addon-network-svm = { path = "addons/svm/core", version = "0.3.24" }
 uuid = { version = "1.15.1", features = ["v4", "serde", "js"] }
