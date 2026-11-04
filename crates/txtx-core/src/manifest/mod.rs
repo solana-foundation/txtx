@@ -39,24 +39,13 @@ impl WorkspaceManifest {
     ) -> Result<WorkspaceManifest, String> {
         let content = file_accessor.read_file(location.to_string()).await?;
 
-        let manifest_file: WorkspaceManifestFile = match serde_yml::from_slice(content.as_bytes()) {
-            Ok(s) => s,
-            Err(e) => {
-                return Err(format!("txtx.yml file malformatted {:?}", e));
-            }
-        };
+        let manifest_file = WorkspaceManifestFile::from_yaml_slice(content.as_bytes())?;
         WorkspaceManifest::from_manifest_file(manifest_file, location)
     }
 
     pub fn from_location(location: &FileLocation) -> Result<WorkspaceManifest, String> {
         let manifest_file_content = location.read_content()?;
-        let manifest_file: WorkspaceManifestFile =
-            match serde_yml::from_slice(&manifest_file_content[..]) {
-                Ok(s) => s,
-                Err(e) => {
-                    return Err(format!("txtx.yml file malformatted {:?}", e));
-                }
-            };
+        let manifest_file = WorkspaceManifestFile::from_yaml_slice(&manifest_file_content[..])?;
 
         WorkspaceManifest::from_manifest_file(manifest_file, location)
     }

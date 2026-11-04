@@ -9,7 +9,6 @@ mod macros;
 pub mod constants;
 
 pub use hex;
-// pub use hiro_system_kit;
 pub use indoc::formatdoc;
 pub use indoc::indoc;
 use types::commands::CommandInputsEvaluationResult;

@@ -5,7 +5,7 @@ use txtx_core::{kit::Addon, std::StdAddon};
 mod macros;
 
 #[macro_use]
-extern crate hiro_system_kit;
+extern crate txtx_system_kit;
 
 pub mod cli;
 pub mod manifest;

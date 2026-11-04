@@ -20,17 +20,16 @@ txtx-supervisor-ui = { workspace = true, optional = true }
 txtx-addon-network-svm = { workspace = true }
 txtx-addon-network-evm = { workspace = true }
 txtx-gql = { workspace = true }
-hiro-system-kit = "0.3.1"
+txtx-system-kit = { workspace = true }
 clap = { version = "4.4.6", features = ["derive"], optional = true }
 ctrlc = { version = "3.2.2", optional = true }
 dotenvy = "0.15.7"
 serde = "1"
 serde_json = "1"
-serde_yml = "0.0.11"
+serde-saphyr = { version = "2.1.0", default-features = false, features = ["serialize", "deserialize"] }
 ascii_table = "4.0.3"
 itertools = "0.12.0"
 ansi_term = "0.12.1"
-atty = "0.2.14"
 tokio = "1.37.0"
 openssl = { version = "*", features = ["vendored"] }
 openssl-sys = { version = "*", features = ["vendored"] }
@@ -49,10 +48,10 @@ strum = { version = "0.26", features = ["derive"] }
 
 [features]
 default = ["cli", "supervisor_ui"]
-cli = ["clap", "ctrlc", "hiro-system-kit/log"]
+cli = ["clap", "ctrlc", "txtx-system-kit/log"]
 supervisor_ui = ["txtx-supervisor-ui"]
-debug = ["hiro-system-kit/debug"]
-release = ["hiro-system-kit/release"]
+debug = ["txtx-system-kit/debug"]
+release = ["txtx-system-kit/release"]
 
 
 [dev-dependencies]

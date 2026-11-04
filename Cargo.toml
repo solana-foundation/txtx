@@ -13,6 +13,7 @@ members = [
     "crates/txtx-addon-kit",
     "crates/txtx-lsp",
     "crates/txtx-supervisor-ui",
+    "crates/txtx-system-kit",
     "addons/evm",
     "addons/svm/types",
     "addons/svm/core",
@@ -30,6 +31,7 @@ txtx-core = { path = "crates/txtx-core", version = "0.4.19", default-features = 
 txtx-addon-kit = { path = "crates/txtx-addon-kit", version = "0.4.16", default-features = false }
 txtx-gql = { path = "crates/txtx-gql", version = "0.3.12" }
 txtx-supervisor-ui = { path = "crates/txtx-supervisor-ui", version = "0.2.12" }
+txtx-system-kit = { path = "crates/txtx-system-kit", version = "0.1.0" }
 txtx-addon-network-evm = { path = "addons/evm", version = "0.1.2" }
 txtx-addon-network-svm-types = { path = "addons/svm/types", version = "0.3.21" }
 txtx-addon-network-svm = { path = "addons/svm/core", version = "0.3.24" }

@@ -1,7 +1,7 @@
-use atty::Stream;
 use clap::{ArgAction, Parser, Subcommand};
 use dotenvy::dotenv;
-use hiro_system_kit::{self, Logger};
+use txtx_system_kit::{self, Logger};
+use std::io::IsTerminal;
 use std::process;
 
 mod common;
@@ -250,7 +250,7 @@ pub struct LintRunbook {
 }
 
 fn load_stdin() -> Option<String> {
-    if atty::is(Stream::Stdin) {
+    if std::io::stdin().is_terminal() {
         return None;
     }
     let mut buffer = String::new();
@@ -259,8 +259,8 @@ fn load_stdin() -> Option<String> {
 }
 
 pub fn main() {
-    let logger = hiro_system_kit::log::setup_logger();
-    let _guard = hiro_system_kit::log::setup_global_logger(logger.clone());
+    let logger = txtx_system_kit::log::setup_logger();
+    let _guard = txtx_system_kit::log::setup_global_logger(logger.clone());
     let ctx = Context { logger: Some(logger), tracer: false };
 
     let opts: Opts = match Opts::try_parse() {
@@ -270,7 +270,7 @@ pub fn main() {
 
     let buffer_stdin = if let Command::Lsp = opts.command { None } else { load_stdin() };
 
-    match hiro_system_kit::nestable_block_on(handle_command(opts, &ctx, buffer_stdin)) {
+    match txtx_system_kit::nestable_block_on(handle_command(opts, &ctx, buffer_stdin)) {
         Err(e) => {
             error!(ctx.expect_logger(), "{e}");
             std::thread::sleep(std::time::Duration::from_millis(500));

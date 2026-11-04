@@ -41,7 +41,7 @@ spl-token-interface = "2.0.0"
 spl-token-2022-interface = "2.0.0"
 solana_idl = "0.2.0"
 # borsh_1_5_1 = { version = "1.5.1", package = "borsh" }
-tiny-bip39 = "0.8.2"
+tiny-bip39 = "2.0.0"
 convert_case = "0.6.0"
 
 # Solana Record Service Dependencies
