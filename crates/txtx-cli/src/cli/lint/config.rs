@@ -19,7 +19,7 @@ pub enum RuleConfig {
     Full {
         severity: Severity,
         #[serde(default)]
-        options: HashMap<String, serde_yml::Value>,
+        options: HashMap<String, serde_json::Value>,
     },
 }
 
@@ -39,7 +39,7 @@ impl RuleConfig {
 
     /// Get options for this rule
     #[allow(dead_code)] // Will be used when rules support custom options
-    pub fn options(&self) -> Option<&HashMap<String, serde_yml::Value>> {
+    pub fn options(&self) -> Option<&HashMap<String, serde_json::Value>> {
         match self {
             RuleConfig::Severity(_) => None,
             RuleConfig::Full { options, .. } => Some(options),
@@ -72,7 +72,9 @@ impl ConfigFile {
         let content = fs::read_to_string(path)
             .map_err(|e| format!("Failed to read config file: {}", e))?;
 
-        serde_yml::from_str(&content)
+        // YAML 1.2 booleans only, so `off` stays a severity rather than becoming `false`.
+        let options = serde_saphyr::options! { strict_booleans: true };
+        serde_saphyr::from_str_with_options(&content, options)
             .map_err(|e| format!("Failed to parse YAML config: {}", e))
     }
 

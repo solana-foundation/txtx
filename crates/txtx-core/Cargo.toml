@@ -23,7 +23,7 @@ petgraph = "0.8.2"
 libsecp256k1 = "0.7.0"
 ripemd = "0.1.3"
 serde = "1"
-serde_yml = "0.0.11"
+serde-saphyr = { version = "2.1.0", default-features = false, features = ["deserialize"] }
 chrono = "0.4.38"
 similar = "2.5.0"
 better-debug = "1.0.1"
