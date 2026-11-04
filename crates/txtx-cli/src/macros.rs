@@ -6,9 +6,9 @@
 macro_rules! colorize_impl {
     ($color_expr:expr, $($arg:tt)*) => {
         {
-            use atty::Stream;
             use ansi_term::Style;
-            if atty::is(Stream::Stdout) {
+            use std::io::IsTerminal;
+            if std::io::stdout().is_terminal() {
                 format!("{}", $color_expr.paint(format!($($arg)*)))
             } else {
                 format!($($arg)*)
@@ -104,7 +104,7 @@ macro_rules! format_note {
 mod tests {
     // Helper to create a test scenario where we know if we're in a TTY
     fn is_tty() -> bool {
-        atty::is(atty::Stream::Stdout)
+        std::io::IsTerminal::is_terminal(&std::io::stdout())
     }
 
     // ANSI escape codes for reference
@@ -162,8 +162,8 @@ mod tests {
         macro_rules! test_colorize {
             ($color:expr, $text:literal) => {{
                 use ansi_term::Style;
-                use atty::Stream;
-                if atty::is(Stream::Stdout) {
+                use std::io::IsTerminal;
+                if std::io::stdout().is_terminal() {
                     format!("{}", $color.paint($text))
                 } else {
                     format!($text)

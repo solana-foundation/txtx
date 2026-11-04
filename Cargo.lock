@@ -1682,17 +1682,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
-name = "atty"
-version = "0.2.14"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d9b39be18770d11421cdb1b9947a45dd3f37e93092cbf377614828a319d5fee8"
-dependencies = [
- "hermit-abi 0.1.19",
- "libc",
- "winapi",
-]
-
-[[package]]
 name = "aurora-engine-modexp"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4239,15 +4228,6 @@ checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 
 [[package]]
 name = "hermit-abi"
-version = "0.1.19"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "62b467343b94ba476dcb2500d242dadbb39557df889310ac77c5d99100aaac33"
-dependencies = [
- "libc",
-]
-
-[[package]]
-name = "hermit-abi"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fbf6a919d6cf397374f7dfeeea91d974c7c0a7221d0d0f4f20d859d329e53fcc"
@@ -4287,25 +4267,6 @@ name = "highway"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c706f1711006204c2ba8fb1a7bd55f689bbf7feca9ff40325206b5e140cff6df"
-
-[[package]]
-name = "hiro-system-kit"
-version = "0.3.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4d3bf5cf007a9973ef9b7dffe8d63fa5228e9bb1aa012e89da2b9f1e7119ce6e"
-dependencies = [
- "ansi_term",
- "atty",
- "lazy_static",
- "slog",
- "slog-async",
- "slog-atomic",
- "slog-json",
- "slog-scope",
- "slog-term",
- "time",
- "tokio",
-]
 
 [[package]]
 name = "histogram"
@@ -10981,7 +10942,6 @@ dependencies = [
  "hcl-edit",
  "hex",
  "highway",
- "hiro-system-kit",
  "hmac 0.12.1",
  "indexmap 2.14.0",
  "indoc",
@@ -11102,7 +11062,6 @@ dependencies = [
  "actix-web",
  "ansi_term",
  "ascii_table",
- "atty",
  "chrono",
  "clap",
  "colored",
@@ -11112,7 +11071,6 @@ dependencies = [
  "dialoguer",
  "dotenvy",
  "fern",
- "hiro-system-kit",
  "indicatif",
  "itertools 0.12.1",
  "lazy_static",
@@ -11136,6 +11094,7 @@ dependencies = [
  "txtx-gql",
  "txtx-lsp",
  "txtx-supervisor-ui",
+ "txtx-system-kit",
  "txtx-test-utils",
 ]
 
@@ -11222,16 +11181,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "txtx-system-kit"
+version = "0.1.0"
+dependencies = [
+ "ansi_term",
+ "slog",
+ "slog-async",
+ "slog-atomic",
+ "slog-json",
+ "slog-scope",
+ "slog-term",
+ "time",
+ "tokio",
+]
+
+[[package]]
 name = "txtx-test-utils"
 version = "0.1.0"
 dependencies = [
- "hiro-system-kit",
  "test-case",
  "tokio",
  "txtx-addon-kit",
  "txtx-addon-network-evm",
  "txtx-addon-network-svm",
  "txtx-core",
+ "txtx-system-kit",
 ]
 
 [[package]]
@@ -11704,7 +11678,7 @@ version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf221c93e13a30d793f7645a0e7762c55d169dbb0a49671918a2319d289b10bb"
 dependencies = [
- "windows-sys 0.48.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]

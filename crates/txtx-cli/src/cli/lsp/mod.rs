@@ -15,7 +15,7 @@ pub async fn run_lsp() -> Result<(), String> {
     let (request_tx, request_rx) = unbounded();
     let (response_tx, response_rx) = mpsc::channel();
     std::thread::spawn(move || {
-        hiro_system_kit::nestable_block_on(native_bridge::start_language_server(
+        txtx_system_kit::nestable_block_on(native_bridge::start_language_server(
             notification_rx,
             request_rx,
             response_tx,

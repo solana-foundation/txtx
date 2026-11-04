@@ -15,9 +15,9 @@ txtx-addon-kit = { workspace = true, default-features = false }
 txtx-core = { workspace = true, default-features = false}
 txtx-addon-network-evm = { workspace = true }
 txtx-addon-network-svm = { workspace = true }
-hiro-system-kit = "0.3.4"
+txtx-system-kit = { workspace = true }
 tokio = "1.43.0"
 
 [dev-dependencies]
 test-case = "*"
-hiro-system-kit = "0.3.4"
+txtx-system-kit = { workspace = true }

@@ -278,10 +278,10 @@ pub fn setup_test(
         action_item_events_tx: action_item_events_tx.clone(),
         action_item_events_rx: action_item_events_rx.resubscribe(),
     };
-    let _ = hiro_system_kit::thread_named("Runbook Runloop").spawn(move || {
+    let _ = txtx_system_kit::thread_named("Runbook Runloop").spawn(move || {
         let runloop_future =
             start_supervised_runbook_runloop(&mut runbook, block_tx, action_item_events_rx);
-        if let Err(diags) = hiro_system_kit::nestable_block_on(runloop_future) {
+        if let Err(diags) = txtx_system_kit::nestable_block_on(runloop_future) {
             for diag in diags.iter() {
                 println!("{}", diag);
             }

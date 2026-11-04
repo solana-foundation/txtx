@@ -673,7 +673,7 @@ pub async fn handle_run_command(
 
     // should not be generating actions
     if is_execution_unsupervised {
-        let _ = hiro_system_kit::thread_named("Display background tasks logs").spawn(move || {
+        let _ = txtx_system_kit::thread_named("Display background tasks logs").spawn(move || {
             let mut active_spinners: IndexMap<Uuid, ProgressBar> = IndexMap::new();
             let mut multi_progress = MultiProgress::new();
 
@@ -741,12 +741,12 @@ pub async fn handle_run_command(
     let moved_runbook_state = runbook_state_location.clone();
     let output_json = cmd.output_json.clone();
     let output_filter = cmd.output.clone();
-    let _ = hiro_system_kit::thread_named("Runbook Runloop").spawn(move || {
+    let _ = txtx_system_kit::thread_named("Runbook Runloop").spawn(move || {
         let runloop_future =
             start_supervised_runbook_runloop(&mut runbook, moved_block_tx, action_item_events_rx);
 
         process_runbook_execution_output(
-            hiro_system_kit::nestable_block_on(runloop_future),
+            txtx_system_kit::nestable_block_on(runloop_future),
             &mut runbook,
             moved_runbook_state,
             &output_json,
@@ -781,7 +781,7 @@ pub async fn handle_run_command(
         .await
         .map_err(|e| format!("failed to start web console: {}", e))?;
 
-        let _ = hiro_system_kit::thread_named("Supervisor UI Event Runloop").spawn(move || {
+        let _ = txtx_system_kit::thread_named("Supervisor UI Event Runloop").spawn(move || {
             while let Ok(msg) = supervisor_events_rx.recv() {
                 match msg {
                     txtx_supervisor_ui::SupervisorEvents::Started(network_binding) => {
@@ -875,7 +875,7 @@ pub async fn handle_run_command(
         }
     });
 
-    let _ = hiro_system_kit::thread_named("Kill Runloops Thread")
+    let _ = txtx_system_kit::thread_named("Kill Runloops Thread")
         .spawn(move || {
             let future = async {
                 match kill_loops_rx.recv() {
@@ -891,7 +891,7 @@ pub async fn handle_run_command(
                 };
             };
 
-            hiro_system_kit::nestable_block_on(future)
+            txtx_system_kit::nestable_block_on(future)
         })
         .unwrap();
 
