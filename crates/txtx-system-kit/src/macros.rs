@@ -3,7 +3,7 @@
 macro_rules! green {
     ($($arg:tt)*) => (
         {
-            use ansi_term::{Colour, Style};
+            use $crate::ansi_term::Colour;
             if ::std::io::IsTerminal::is_terminal(&::std::io::stdout()) {
                 let colour = Colour::Green.bold();
                 format!(
@@ -25,7 +25,7 @@ macro_rules! green {
 macro_rules! red {
     ($($arg:tt)*) => (
         {
-            use ansi_term::{Colour, Style};
+            use $crate::ansi_term::Colour;
             if ::std::io::IsTerminal::is_terminal(&::std::io::stdout()) {
                 let colour = Colour::Red.bold();
                 format!(
@@ -47,7 +47,7 @@ macro_rules! red {
 macro_rules! yellow {
     ($($arg:tt)*) => (
         {
-            use ansi_term::{Colour, Style};
+            use $crate::ansi_term::Colour;
             if ::std::io::IsTerminal::is_terminal(&::std::io::stdout()) {
                 let colour = Colour::Yellow.bold();
                 format!(
@@ -69,7 +69,7 @@ macro_rules! yellow {
 macro_rules! blue {
     ($($arg:tt)*) => (
         {
-            use ansi_term::{Colour, Style};
+            use $crate::ansi_term::Colour;
             if ::std::io::IsTerminal::is_terminal(&::std::io::stdout()) {
                 let colour = Colour::Cyan.bold();
                 format!(
@@ -91,7 +91,7 @@ macro_rules! blue {
 macro_rules! purple {
     ($($arg:tt)*) => (
         {
-            use ansi_term::{Colour, Style};
+            use $crate::ansi_term::Colour;
             if ::std::io::IsTerminal::is_terminal(&::std::io::stdout()) {
                 let colour = Colour::Purple.bold();
                 format!(
@@ -113,7 +113,7 @@ macro_rules! purple {
 macro_rules! black {
     ($($arg:tt)*) => (
         {
-            use ansi_term::{Colour, Style};
+            use $crate::ansi_term::Colour;
             if ::std::io::IsTerminal::is_terminal(&::std::io::stdout()) {
                 let colour = Colour::Fixed(244);
                 format!(
@@ -146,7 +146,7 @@ macro_rules! pluralize {
 macro_rules! format_err {
     ($($arg:tt)*) => (
         {
-            format!("{} {}", red!("error:"), $($arg)*)
+            format!("{} {}", $crate::red!("error:"), $($arg)*)
         }
     )
 }
@@ -156,7 +156,7 @@ macro_rules! format_err {
 macro_rules! format_warn {
     ($($arg:tt)*) => (
         {
-            format!("{} {}", yellow!("warn:"), $($arg)*)
+            format!("{} {}", $crate::yellow!("warn:"), $($arg)*)
         }
     )
 }
@@ -166,7 +166,7 @@ macro_rules! format_warn {
 macro_rules! format_note {
     ($($arg:tt)*) => (
         {
-            format!("{} {}", blue!("note:"), $($arg)*)
+            format!("{} {}", $crate::blue!("note:"), $($arg)*)
         }
     )
 }

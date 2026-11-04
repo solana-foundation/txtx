@@ -1,5 +1,8 @@
 mod macros;
 
+#[doc(hidden)]
+pub use ansi_term;
+
 #[cfg(feature = "tokio_helpers")]
 mod tokio_helpers;
 
